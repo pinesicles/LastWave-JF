@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">LastWave</string>
-    <string name="widget_name">LastWave Player</string>
+    <string name="app_name">JellyWave</string>
+    <string name="widget_name">JellyWave Player</string>
     <string name="widget_description">Artwork, track details and playback controls for every media app</string>
-    <string name="widget_obsidian_name">LastWave Obsidian Glass</string>
+    <string name="widget_obsidian_name">JellyWave Obsidian Glass</string>
     <string name="widget_obsidian_description">Frosted obsidian glass player with translucent depth and crystal rim</string>
 
     <!-- Wave home-screen widgets -->
-    <string name="wave_widget_strip_name">LastWave Strip · 3×1–4×1</string>
+    <string name="wave_widget_strip_name">JellyWave Strip · 3×1–4×1</string>
     <string name="wave_widget_strip_description">Full-cover player with like, previous, play, next and shuffle; resize between 3×1 and 4×1</string>
-    <string name="wave_widget_glass_name">LastWave Glass · 2×2</string>
+    <string name="wave_widget_glass_name">JellyWave Glass · 2×2</string>
     <string name="wave_widget_glass_description">A fixed square glass player with cover colors, progress and playback controls</string>
-    <string name="wave_widget_circular_name">LastWave Wave Circular · 2×2</string>
+    <string name="wave_widget_circular_name">JellyWave Wave Circular · 2×2</string>
     <string name="wave_widget_circular_description">A fixed circular cover with a wave ring and previous, play and next controls</string>
-    <string name="wave_widget_library_name">LastWave Library Grid</string>
+    <string name="wave_widget_library_name">JellyWave Library Grid</string>
     <string name="wave_widget_library_description">Now playing, four recent tracks and quick access; resize between 3×2 and 4×2</string>
     <string name="wave_widget_recently_played">Recently played</string>
     <string name="wave_widget_coming_next">Coming next</string>
@@ -38,7 +38,7 @@
     <string name="wave_widget_playlist_recent">Recent</string>
     <string name="wave_widget_playlist_most_played">Most played</string>
     <string name="wave_widget_preview_title">Midnight Current</string>
-    <string name="wave_widget_preview_artist">LastWave Radio</string>
+    <string name="wave_widget_preview_artist">JellyWave Radio</string>
     <string name="wave_widget_preview_next_one">Afterglow &#183; Lumen</string>
     <string name="wave_widget_preview_next_two">Low Tide &#183; Nocturne</string>
     <string name="wave_widget_preview_next_three">Signal Bloom &#183; Arc</string>
@@ -54,7 +54,7 @@
     <string name="update_available">Update Available</string>
     <string name="update">Update</string>
     <string name="dismiss_update">Dismiss update</string>
-    <string name="update_ready_to_install">LastWave v%1$s is ready to install</string>
+    <string name="update_ready_to_install">JellyWave v%1$s is ready to install</string>
 
     <!-- Settings -->
     <string name="settings">Settings</string>
@@ -110,12 +110,12 @@
     <string name="app_icon_default">Default</string>
     <string name="app_icon_default_sub">Original Electric Lime &amp; Obsidian Teal</string>
     <string name="app_icon_desktop">Desktop</string>
-    <string name="app_icon_desktop_sub">LastWave Desktop Player edition</string>
+    <string name="app_icon_desktop_sub">JellyWave Desktop Player edition</string>
     <string name="app_icon_white">Pure White</string>
     <string name="app_icon_white_sub">White logo with black strip lines</string>
     <string name="app_icon_black">Obsidian Black</string>
     <string name="app_icon_black_sub">Black logo with white strip lines</string>
-    <string name="settings_lastwave_theme">LastWave Signature Theme</string>
+    <string name="settings_lastwave_theme">JellyWave Signature Theme</string>
     <string name="settings_lastwave_theme_sub">Bespoke logo palette • Electric Lime &amp; Obsidian Teal</string>
     <string name="settings_amoled">AMOLED Mode</string>
     <string name="settings_amoled_sub">Pure black background (Dark mode only)</string>
@@ -187,7 +187,7 @@
     <string name="settings_keep_lyrics_screen_awake">Keep Screen Awake on Lyrics</string>
     <string name="settings_keep_lyrics_screen_awake_desc">Prevent screen from turning off while viewing lyrics</string>
     <string name="settings_stop_on_recents">Stop Playback When Swiped Away</string>
-    <string name="settings_stop_on_recents_on">Removing LastWave from Recents stops playback</string>
+    <string name="settings_stop_on_recents_on">Removing JellyWave from Recents stops playback</string>
     <string name="settings_stop_on_recents_off">Playback continues in the background after leaving Recents</string>
     <string name="settings_download_lyrics">Download Synced Lyrics</string>
     <string name="settings_download_lyrics_on">Save .lrc companion files &amp; embed lyrics in downloads</string>
@@ -222,7 +222,7 @@
     <string name="storage_cache_last_cleared">Last cleared %1$s • %2$s freed</string>
     <string name="storage_cache_limit">Cache size limit</string>
     <string name="storage_cache_limit_summary">Selected cache limit: %1$s • Maximum available: %2$s. Oldest cached items are removed as needed; downloads are excluded.</string>
-    <string name="storage_quality_note">Artwork uses smaller thumbnails on mobile data. If a high-resolution cover is already cached, LastWave reuses it without downloading it again.</string>
+    <string name="storage_quality_note">Artwork uses smaller thumbnails on mobile data. If a high-resolution cover is already cached, JellyWave reuses it without downloading it again.</string>
     <string name="storage_clear_cache">Clear cache</string>
     <string name="storage_clear_cache_title">Clear cached artwork and audio?</string>
     <string name="storage_clear_cache_message">This removes cached artwork and streamed audio. Downloaded music will stay on your device.</string>
@@ -1273,8 +1273,24 @@
     <string name="ge_no_tracks">No tracks found</string>
 
     <!-- Login -->
-    <string name="login_tagline">Your music, your way — powered by YouTube Music</string>
+    <string name="login_tagline">Your Jellyfin music, available offline</string>
     <string name="login_yt">Login with YouTube Music</string>
+    <string name="jf_login_section">Jellyfin</string>
+    <string name="jf_scan_looking">Looking for Jellyfin servers on your network…</string>
+    <string name="jf_scan_none">No server found automatically. Type its address below.</string>
+    <string name="jf_scan_again">Scan again</string>
+    <string name="jf_login_server">Server address</string>
+    <string name="jf_login_server_hint">http://192.168.1.10:8096</string>
+    <string name="jf_login_username">Username</string>
+    <string name="jf_login_password">Password</string>
+    <string name="jf_login_connect">Connect to Jellyfin</string>
+    <string name="jf_login_connecting">Connecting…</string>
+    <string name="jf_lastfm_section">Last.fm (optional)</string>
+    <string name="jf_lastfm_connected">Connected as %1$s</string>
+    <string name="jf_lastfm_waiting">Approve in your browser, then come back here…</string>
+    <string name="jf_lastfm_cancel">Cancel</string>
+    <string name="jf_login_local_only">Use local files only</string>
+    <string name="jf_login_local_only_desc">Skip Jellyfin for now. You can still play music stored on this phone.</string>
     <string name="login_guest">Continue as Guest</string>
     <string name="login_guest_desc">Guest mode works fully offline with local recommendations. Connect Last.fm anytime in Settings to sync scrobbles.</string>
     <string name="login_restore">Restore backup</string>

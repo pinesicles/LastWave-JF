@@ -10,6 +10,9 @@ import com.lastwave.app.data.repository.LastFmAuthCallbackCoordinator
 import com.lastwave.app.data.repository.AuthRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -40,6 +43,22 @@ class AuthViewModel @Inject constructor(
      * Music connection or a Last.fm session.
      */
     val isGuestMode: StateFlow<Boolean> = sessionPreferences.guestMode
+
+    /** Last.fm needs the user's own API key + secret (there is no shared key). */
+    val hasApiKey: StateFlow<Boolean> = sessionPreferences.session
+        .map { it.apiKey.isNotBlank() && it.apiSecret.isNotBlank() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** Blank when Last.fm isn't connected. */
+    val lastFmUsername: StateFlow<String> = sessionPreferences.session
+        .map { it.username }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
+
+    fun saveApiCredentials(apiKey: String, apiSecret: String) {
+        viewModelScope.launch {
+            runCatching { authRepository.saveApiCredentials(apiKey.trim(), apiSecret.trim()) }
+        }
+    }
 
     private val _webAuthState = MutableStateFlow<WebAuthState>(WebAuthState.Idle)
     val webAuthState: StateFlow<WebAuthState> = _webAuthState.asStateFlow()

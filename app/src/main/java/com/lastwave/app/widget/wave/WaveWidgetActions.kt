@@ -84,7 +84,7 @@ object WaveWidgetActions {
         stableRequestCode("$appWidgetId|search"),
         Intent(context, MainShellActivity::class.java)
             .setAction(Intent.ACTION_SEARCH)
-            .setData(Uri.parse("lastwave://wave-widget/$appWidgetId/search"))
+            .setData(Uri.parse("jellywave://wave-widget/$appWidgetId/search"))
             .putExtra("widget_navigation", "search")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,

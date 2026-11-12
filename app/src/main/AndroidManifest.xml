@@ -63,7 +63,7 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.LastWave.Splash"
-        android:usesCleartextTraffic="false"
+        android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:localeConfig="@xml/locales_config"
         android:hardwareAccelerated="true"
@@ -106,7 +106,7 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="lastwave" android:host="auth-callback" />
+                <data android:scheme="jellywave" android:host="auth-callback" />
             </intent-filter>
 
             <!-- LastWave Jam deep links (lastwave://jam?code=... and lastwave://sync?code=...) -->

@@ -44,6 +44,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 /** Thin bridge so LastWaveNavHost (a plain composable, no direct Hilt
@@ -65,20 +66,18 @@ class ArtistAlbumNavBridge @Inject constructor(val navigator: ArtistAlbumNavigat
 class AppRouteNavBridge @Inject constructor(val routeNavigator: AppRouteNavigator) : ViewModel()
 
 /**
- * Splash / onboarding gate for the YouTube Music-first flow.
+ * Splash / onboarding gate.
  *
  * Routes to MainShell when ANY onboarding signal is present:
- *  - a Last.fm session (legacy [AuthState.SignedIn]), OR
- *  - a YouTube Music connection (cookies captured via YtMusicAuthManager), OR
- *  - a previously-selected guest mode (account-free).
- * Otherwise routes to Login, which now shows only "Login with YouTube Music"
- * and "Continue as Guest".
+ *  - a saved Jellyfin session, OR
+ *  - the previously-selected "local files only" (guest) mode.
+ * Otherwise routes to Login (Jellyfin server + optional Last.fm).
+ * Last.fm on its own does not unlock the app: it is only a scrobbling add-on.
  */
 @HiltViewModel
 class LaunchGateViewModel @Inject constructor(
-    authRepository: com.lastwave.app.data.repository.AuthRepository,
     sessionPreferences: com.lastwave.app.data.local.SessionPreferences,
-    ytAuthManager: com.lastwave.app.data.ytmusic.YtMusicAuthManager,
+    jellyfinRepository: com.lastwave.app.data.jellyfin.JellyfinRepository,
 ) : ViewModel() {
     sealed interface GateTarget {
         data object Loading : GateTarget
@@ -86,24 +85,26 @@ class LaunchGateViewModel @Inject constructor(
         data object MainShell : GateTarget
     }
 
+    // Distinguishes "DataStore not read yet" from "read, and nobody is signed in".
+    private data class JellyfinGate(val loaded: Boolean, val signedIn: Boolean)
+
+    private val jellyfinGate: kotlinx.coroutines.flow.Flow<JellyfinGate> =
+        jellyfinRepository.session
+            .map { JellyfinGate(loaded = true, signedIn = it != null) }
+
     val gateTarget: kotlinx.coroutines.flow.StateFlow<GateTarget> =
         kotlinx.coroutines.flow.combine(
-            authRepository.authState,
             sessionPreferences.session,
             sessionPreferences.guestMode,
-            ytAuthManager.connection,
-        ) { authState, session, guestMode, ytConnection ->
+            jellyfinGate,
+        ) { session, guestMode, jellyfin ->
             // Wait for DataStore to load before deciding; otherwise every
             // cold start would flash Login.
-            if (!session.isLoaded) {
+            if (!session.isLoaded || !jellyfin.loaded) {
                 GateTarget.Loading
-            } else if (authState is AuthState.Unknown) {
-                GateTarget.Loading
-            } else if (authState is AuthState.SignedIn) {
+            } else if (jellyfin.signedIn) {
                 GateTarget.MainShell
             } else if (guestMode) {
-                GateTarget.MainShell
-            } else if (ytConnection.isConnected) {
                 GateTarget.MainShell
             } else {
                 GateTarget.Login
@@ -221,8 +222,8 @@ fun LastWaveNavHost(
     ) {
 
         // Resolves the persisted session BEFORE showing any interactive UI.
-        // YouTube Music-first gate: MainShell when Last.fm signed in OR
-        // YouTube Music connected OR guest mode was previously selected.
+        // Gate: MainShell when a Jellyfin session exists OR "local files only"
+        // mode was previously selected.
         // This keeps login persistent without flashing Login on cold start.
         composable(Screen.Splash.route) {
             val gateViewModel: LaunchGateViewModel = hiltViewModel()
@@ -249,14 +250,14 @@ fun LastWaveNavHost(
             val gateTarget by gateViewModel.gateTarget.collectAsStateWithLifecycle()
             val webAuthState by authViewModel.webAuthState.collectAsStateWithLifecycle()
 
-            // YouTube Music-first onboarding: any onboarded signal (Last.fm
-            // session, YT connection, or guest flag) skips straight to
-            // MainShell. YT login returns here via YouTubeLogin's onConnected
-            // pop, then this effect immediately forwards to MainShell.
+            // Onboarding: a Jellyfin session or the local-files-only flag skips
+            // straight to MainShell. Waits while a Last.fm approval or a backup
+            // restore is mid-flight so those can finish first.
             LaunchedEffect(gateTarget, webAuthState) {
-                if (gateTarget == LaunchGateViewModel.GateTarget.MainShell &&
-                    webAuthState == com.lastwave.app.ui.auth.WebAuthState.Idle
-                ) {
+                val authBusy = webAuthState is com.lastwave.app.ui.auth.WebAuthState.AwaitingApproval ||
+                    webAuthState is com.lastwave.app.ui.auth.WebAuthState.CompletingSignIn ||
+                    webAuthState is com.lastwave.app.ui.auth.WebAuthState.RestoringBackup
+                if (gateTarget == LaunchGateViewModel.GateTarget.MainShell && !authBusy) {
                     navController.navigate(Screen.MainShell.route) {
                         popUpTo(Screen.Login.route) { inclusive = true }
                     }
@@ -266,9 +267,6 @@ fun LastWaveNavHost(
             val restoreError = (webAuthState as? com.lastwave.app.ui.auth.WebAuthState.Error)?.message
             val restoring = webAuthState == com.lastwave.app.ui.auth.WebAuthState.RestoringBackup
             LoginScreen(
-                onLoginWithYouTube = {
-                    navController.navigate(Screen.YouTubeLogin.route)
-                },
                 onContinueAsGuest = {
                     authViewModel.continueAsGuest()
                 },

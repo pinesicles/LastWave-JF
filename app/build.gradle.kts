@@ -243,7 +243,7 @@ android {
     val vivoOrigin = (project.findProperty("vivoOrigin") as? String)?.toBoolean() == true
 
     defaultConfig {
-        applicationId = if (vivoOrigin) "com.tencent.qqmusic" else "com.lastwave.app"
+        applicationId = if (vivoOrigin) "com.tencent.qqmusic" else "com.lastwave.app.jelly"
         buildConfigField("boolean", "VIVO_ORIGIN", vivoOrigin.toString())
         minSdk = (project.findProperty("minSdk") as? String)?.toIntOrNull() ?: 29
         targetSdk = 35

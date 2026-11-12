@@ -1,0 +1,105 @@
+package com.lastwave.app.data.jellyfin
+
+import com.lastwave.app.playback.PlayableTrack
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/** Prefix on [PlayableTrack.internalTrackId] for tracks that come from Jellyfin. */
+const val JELLYFIN_TRACK_PREFIX = "jf:"
+
+fun PlayableTrack.jellyfinItemIdOrNull(): String? =
+    internalTrackId?.takeIf { it.startsWith(JELLYFIN_TRACK_PREFIX) }?.removePrefix(JELLYFIN_TRACK_PREFIX)
+
+/** What the UI works with: login state plus library and playback helpers. */
+@Singleton
+class JellyfinRepository @Inject constructor(
+    private val api: JellyfinApi,
+    private val store: JellyfinSessionStore,
+) {
+    val session = store.session
+    val streamKbps = store.streamKbps
+
+    suspend fun login(serverInput: String, username: String, password: String): JellyfinSession {
+        val serverUrl = JellyfinApi.normalizeServerUrl(serverInput)
+        if (serverUrl.isEmpty()) throw JellyfinException("Enter your server address")
+        val info = api.publicInfo(serverUrl)
+        val deviceId = store.deviceId()
+        val auth = api.authenticate(serverUrl, username.trim(), password, deviceId)
+        val session = JellyfinSession(
+            serverUrl = serverUrl,
+            token = auth.accessToken,
+            userId = auth.user.id,
+            deviceId = deviceId,
+            serverName = info.serverName.orEmpty(),
+            serverVersion = info.version.orEmpty(),
+        )
+        store.save(session)
+        return session
+    }
+
+    suspend fun logout() = store.clear()
+
+    suspend fun setStreamKbps(kbps: Int) = store.setStreamKbps(kbps)
+
+    private suspend fun requireSession(): JellyfinSession =
+        store.current() ?: throw JellyfinException("Not signed in to Jellyfin")
+
+    suspend fun albums(startIndex: Int = 0, limit: Int = 100, favoritesOnly: Boolean = false) =
+        api.albums(requireSession(), startIndex, limit, favoritesOnly)
+
+    suspend fun artists(startIndex: Int = 0, limit: Int = 100) =
+        api.albumArtists(requireSession(), startIndex, limit)
+
+    suspend fun artistAlbums(artistId: String) = api.artistAlbums(requireSession(), artistId)
+    suspend fun playlists() = api.playlists(requireSession())
+    suspend fun search(term: String) = api.search(requireSession(), term)
+
+    suspend fun albumTracks(albumId: String): List<PlayableTrack> {
+        val s = requireSession()
+        val kbps = store.currentStreamKbps()
+        return api.albumTracks(s, albumId).items.map { toPlayable(s, it, kbps) }
+    }
+
+    suspend fun playlistTracks(playlistId: String): List<PlayableTrack> {
+        val s = requireSession()
+        val kbps = store.currentStreamKbps()
+        return api.playlistTracks(s, playlistId).items.map { toPlayable(s, it, kbps) }
+    }
+
+    suspend fun favoriteTracks(): List<PlayableTrack> {
+        val s = requireSession()
+        val kbps = store.currentStreamKbps()
+        return api.favoriteTracks(s).items.map { toPlayable(s, it, kbps) }
+    }
+
+    suspend fun setFavorite(itemId: String, favorite: Boolean) =
+        api.setFavorite(requireSession(), itemId, favorite)
+
+    /** Cover art URL for an album/artist/playlist row. */
+    suspend fun imageUrl(item: JfItem, size: Int = 600): String? {
+        val s = store.current() ?: return null
+        val tag = item.imageTags["Primary"] ?: return null
+        return api.imageUrl(s, item.id, tag, size)
+    }
+
+    fun toPlayable(session: JellyfinSession, item: JfItem, maxKbps: Int): PlayableTrack {
+        val source = item.mediaSources.firstOrNull()
+        val sourceKbps = source?.bitrate?.let { (it / 1000L).toInt() }
+        val target = api.streamTarget(session, item.id, maxKbps, sourceKbps)
+        val artistText = item.artists.joinToString(", ").ifBlank { item.albumArtist.orEmpty() }
+        // Tracks without their own cover use the album's.
+        val artId = if (item.imageTags.containsKey("Primary")) item.id else (item.albumId ?: item.id)
+        val artTag = item.imageTags["Primary"] ?: item.albumPrimaryImageTag
+        return PlayableTrack(
+            title = item.name.orEmpty().ifBlank { "Unknown track" },
+            artist = artistText.ifBlank { "Unknown artist" },
+            album = item.album,
+            artworkUrl = api.imageUrl(session, artId, artTag),
+            internalTrackId = JELLYFIN_TRACK_PREFIX + item.id,
+            playbackUrl = target.url,
+            playbackMimeType = target.mimeType,
+            durationMs = item.durationMs,
+            trackNumber = item.trackNumber,
+        )
+    }
+}

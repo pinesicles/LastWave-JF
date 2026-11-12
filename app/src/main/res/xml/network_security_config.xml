@@ -1,10 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Cleartext stays off everywhere except the loopback origin that serves
-     locally decrypted hybrid addon audio to the player. -->
+<!-- JellyWave: a home Jellyfin server is usually plain http://192.168.x.x:8096,
+     and Android cannot allow cleartext for an IP range, only everywhere or per
+     hostname. This is a personal build, so cleartext is allowed. Prefer https
+     (or a VPN such as Tailscale) when reaching the server from outside your home. -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">127.0.0.1</domain>
-        <domain includeSubdomains="false">localhost</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>
