@@ -136,6 +136,8 @@ fun PlaylistScreen(
     onOpenPlaylist: (Long) -> Unit = {},
     onOpenFeedPlaylist: (String) -> Unit = {},
     onOpenGenerator: () -> Unit = {},
+    /** JellyWave draws its own header above this screen and turns this one off. */
+    showHeader: Boolean = true,
     viewModel: PlaylistViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -176,7 +178,7 @@ fun PlaylistScreen(
                 .align(Alignment.TopCenter),
         ) {
             var sortMenuExpanded by remember { mutableStateOf(false) }
-            ExpressiveHeader(
+            if (showHeader) ExpressiveHeader(
                 title = if (selectedPlaylists.isNotEmpty()) stringResource(R.string.pl_selected_count, selectedPlaylists.size) else stringResource(R.string.pl_title),
                 subtitle = if (selectedPlaylists.isNotEmpty()) {
                     stringResource(R.string.pl_select_more_hint)

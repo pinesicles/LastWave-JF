@@ -67,6 +67,8 @@ data class JfItem(
     @SerialName("UserData") val userData: JfUserData? = null,
     @SerialName("MediaSources") val mediaSources: List<JfMediaSource> = emptyList(),
     @SerialName("ProviderIds") val providerIds: Map<String, String> = emptyMap(),
+    /** Only set on playlist entries; needed to remove or move one entry. */
+    @SerialName("PlaylistItemId") val playlistItemId: String? = null,
 ) {
     val durationMs: Long? get() = runTimeTicks?.let { it / 10_000L }?.takeIf { it > 0 }
     val isFavorite: Boolean get() = userData?.isFavorite == true

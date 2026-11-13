@@ -1,5 +1,12 @@
 package com.lastwave.app.data.jellyfin
 
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.JsonObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -270,6 +277,77 @@ class JellyfinApi @Inject constructor(
             builder.delete().build()
         }
         execute(request)
+    }
+
+    // ---- playlist editing ------------------------------------------------
+
+    private fun jsonBody(obj: JsonObject) = obj.toString().toRequestBody(JSON_MEDIA)
+
+    /** Creates a playlist (optionally pre-filled) and returns its id. */
+    suspend fun createPlaylist(session: JellyfinSession, name: String, itemIds: List<String>): String {
+        val payload = buildJsonObject {
+            put("Name", name)
+            put("UserId", session.userId)
+            put("MediaType", "Audio")
+            put("Ids", buildJsonArray { itemIds.forEach { add(it) } })
+        }
+        val body = execute(
+            authed(session, urlBuilder(session.serverUrl, "Playlists").build()).post(jsonBody(payload)).build(),
+        )
+        return try {
+            JellyfinJson.parseToJsonElement(body).jsonObject["Id"]?.jsonPrimitive?.content
+        } catch (e: Exception) {
+            null
+        } ?: throw JellyfinException("The server didn't return the new playlist")
+    }
+
+    suspend fun addToPlaylist(session: JellyfinSession, playlistId: String, itemIds: List<String>) {
+        itemIds.chunked(50).forEach { chunk ->
+            val url = urlBuilder(session.serverUrl, "Playlists", playlistId, "Items").apply {
+                addQueryParameter("ids", chunk.joinToString(","))
+                addQueryParameter("userId", session.userId)
+            }.build()
+            execute(authed(session, url).post("".toRequestBody(JSON_MEDIA)).build())
+        }
+    }
+
+    /** [entryIds] are playlist entry ids (a song added twice has two), not song ids. */
+    suspend fun removeFromPlaylist(session: JellyfinSession, playlistId: String, entryIds: List<String>) {
+        val url = urlBuilder(session.serverUrl, "Playlists", playlistId, "Items").apply {
+            addQueryParameter("entryIds", entryIds.joinToString(","))
+        }.build()
+        execute(authed(session, url).delete().build())
+    }
+
+    suspend fun movePlaylistItem(session: JellyfinSession, playlistId: String, entryId: String, newIndex: Int) {
+        val url = urlBuilder(
+            session.serverUrl, "Playlists", playlistId, "Items", entryId, "Move", newIndex.toString(),
+        ).build()
+        execute(authed(session, url).post("".toRequestBody(JSON_MEDIA)).build())
+    }
+
+    /**
+     * Newer servers have a dedicated playlist update call; older ones only accept a
+     * full item update, so fall back to that when the first one isn't there.
+     */
+    suspend fun renamePlaylist(session: JellyfinSession, playlistId: String, name: String) {
+        try {
+            val url = urlBuilder(session.serverUrl, "Playlists", playlistId).build()
+            execute(authed(session, url).post(jsonBody(buildJsonObject { put("Name", name) })).build())
+        } catch (e: JellyfinException) {
+            if (e.httpCode != 404 && e.httpCode != 405) throw e
+            val getUrl = urlBuilder(session.serverUrl, "Users", session.userId, "Items", playlistId).build()
+            val current = JellyfinJson.parseToJsonElement(execute(authed(session, getUrl).get().build())).jsonObject
+            val updated = JsonObject(current + ("Name" to kotlinx.serialization.json.JsonPrimitive(name)))
+            val postUrl = urlBuilder(session.serverUrl, "Items", playlistId).build()
+            execute(authed(session, postUrl).post(jsonBody(updated)).build())
+        }
+    }
+
+    /** Needs delete permission on the server; otherwise the server answers 403. */
+    suspend fun deleteItem(session: JellyfinSession, itemId: String) {
+        val url = urlBuilder(session.serverUrl, "Items", itemId).build()
+        execute(authed(session, url).delete().build())
     }
 
     // ---- URL builders (no network) ---------------------------------------

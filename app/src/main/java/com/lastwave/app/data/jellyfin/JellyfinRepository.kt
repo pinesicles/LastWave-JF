@@ -11,6 +11,14 @@ fun PlayableTrack.jellyfinItemIdOrNull(): String? =
     internalTrackId?.takeIf { it.startsWith(JELLYFIN_TRACK_PREFIX) }?.removePrefix(JELLYFIN_TRACK_PREFIX)
 
 /** What the UI works with: login state plus library and playback helpers. */
+/** Search results, grouped. Used for server search and for searching saved items. */
+data class SearchHits(
+    val albums: List<JfItem> = emptyList(),
+    val artists: List<JfItem> = emptyList(),
+    val playlists: List<JfItem> = emptyList(),
+    val tracks: List<PlayableTrack> = emptyList(),
+)
+
 @Singleton
 class JellyfinRepository @Inject constructor(
     private val api: JellyfinApi,
@@ -86,6 +94,55 @@ class JellyfinRepository @Inject constructor(
         val s = requireSession()
         val kbps = store.currentStreamKbps()
         return api.playlistTracks(s, playlistId).items.map { toPlayable(s, it, kbps) }
+    }
+
+    /** A playlist row: the song plus the entry id used to remove or move it. */
+    data class PlaylistEntry(val track: PlayableTrack, val entryId: String?)
+
+    suspend fun playlistEntries(playlistId: String): List<PlaylistEntry> {
+        val s = requireSession()
+        val kbps = store.currentStreamKbps()
+        return api.playlistTracks(s, playlistId).items.map { PlaylistEntry(toPlayable(s, it, kbps), it.playlistItemId) }
+    }
+
+    suspend fun createPlaylist(name: String, trackIds: List<String>) =
+        api.createPlaylist(requireSession(), name, trackIds)
+
+    suspend fun addToPlaylist(playlistId: String, trackIds: List<String>) =
+        api.addToPlaylist(requireSession(), playlistId, trackIds)
+
+    suspend fun removeFromPlaylist(playlistId: String, entryId: String) =
+        api.removeFromPlaylist(requireSession(), playlistId, listOf(entryId))
+
+    suspend fun movePlaylistItem(playlistId: String, entryId: String, newIndex: Int) =
+        api.movePlaylistItem(requireSession(), playlistId, entryId, newIndex)
+
+    suspend fun renamePlaylist(playlistId: String, name: String) =
+        api.renamePlaylist(requireSession(), playlistId, name)
+
+    suspend fun deletePlaylist(playlistId: String) = api.deleteItem(requireSession(), playlistId)
+
+    suspend fun searchHits(term: String): SearchHits {
+        val s = requireSession()
+        val kbps = store.currentStreamKbps()
+        val items = api.search(s, term).items
+        return SearchHits(
+            albums = items.filter { it.type == "MusicAlbum" },
+            artists = items.filter { it.type == "MusicArtist" },
+            tracks = items.filter { it.type == "Audio" }.map { toPlayable(s, it, kbps) },
+        )
+    }
+
+    /** Everything saved (hearted albums/artists, playlists, liked songs), for searching locally. */
+    suspend fun savedHits(): SearchHits {
+        val s = requireSession()
+        val kbps = store.currentStreamKbps()
+        return SearchHits(
+            albums = api.albums(s, 0, 500, true).items,
+            artists = api.albumArtists(s, 0, 500, true).items,
+            playlists = api.playlists(s).items,
+            tracks = api.favoriteTracks(s).items.map { toPlayable(s, it, kbps) },
+        )
     }
 
     suspend fun favoriteTracks(): List<PlayableTrack> {

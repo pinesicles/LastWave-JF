@@ -1,5 +1,16 @@
 package com.lastwave.app.ui.feed
 
+import com.lastwave.app.ui.library.LocalTopInset
+import com.lastwave.app.ui.library.LibrarySession
+import com.lastwave.app.ui.library.JellySearchResults
+import com.lastwave.app.ui.library.JellySearchField
+import com.lastwave.app.ui.library.JellyChipsBar
+import com.lastwave.app.ui.common.HeaderActionIcon
+import com.lastwave.app.ui.common.GlassHeaderLayout
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.material.icons.filled.Close
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -90,46 +101,65 @@ fun JellyfinFeedHome(
         return
     }
 
-    Column(Modifier.fillMaxSize()) {
-        ExpressiveHeader(
-            title = stringResource(R.string.feed_home),
-            actions = {
-                JellyHeaderActions(
-                    onRefresh = if (section == 0) feedViewModel::refresh else libraryViewModel::refresh,
-                    onOpenDownloads = onOpenDownloads,
-                    onOpenSettings = onOpenSettings,
-                )
-            },
-            bottomContent = {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(SECTIONS.size) { index ->
-                        FilterChip(
-                            selected = section == index,
-                            onClick = { section = index },
-                            label = { Text(SECTIONS[index]) },
+    var searching by rememberSaveable { mutableStateOf(false) }
+    val search by libraryViewModel.search.collectAsStateWithLifecycle()
+    val libTabs by libraryViewModel.tabs.collectAsStateWithLifecycle()
+    val libTab by libraryViewModel.tab.collectAsStateWithLifecycle()
+    val sessionState by libraryViewModel.sessionState.collectAsStateWithLifecycle()
+    val closeSearch = { searching = false; libraryViewModel.clearSearch() }
+    BackHandler(enabled = active && searching) { closeSearch() }
+
+    GlassHeaderLayout(
+        modifier = Modifier.fillMaxSize(),
+        header = { headerModifier, backdrop ->
+            ExpressiveHeader(
+                title = stringResource(R.string.feed_home),
+                modifier = headerModifier,
+                backdrop = backdrop,
+                actions = {
+                    if (searching) {
+                        HeaderActionIcon(Icons.Filled.Close, "Close search", closeSearch)
+                    } else {
+                        JellyHeaderActions(
+                            onRefresh = if (section == 0) feedViewModel::refresh else libraryViewModel::refresh,
+                            onSearch = { searching = true },
+                            onOpenDownloads = onOpenDownloads,
+                            onOpenSettings = onOpenSettings,
                         )
                     }
+                },
+                bottomContent = {
+                    if (searching) {
+                        JellySearchField(search.query, libraryViewModel::setSearchQuery)
+                    } else {
+                        JellyChipsBar(SECTIONS, section) { section = it }
+                        if (section == 1) {
+                            JellyChipsBar(libTabs.map { it.label }, libTabs.indexOf(libTab).coerceAtLeast(0)) {
+                                libraryViewModel.selectTab(libTabs[it])
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                },
+            )
+        },
+        content = { inset ->
+            CompositionLocalProvider(LocalTopInset provides inset) {
+                when {
+                    searching -> JellySearchResults(
+                        (sessionState as? LibrarySession.SignedIn)?.session, search, libraryViewModel,
+                    )
+                    section == 0 -> FeedSections(feedViewModel, libraryViewModel)
+                    else -> LibraryScreen(
+                        mode = LibraryMode.SERVER,
+                        embedded = true,
+                        active = active,
+                        viewModel = libraryViewModel,
+                    )
                 }
-                Spacer(Modifier.height(8.dp))
-            },
-        )
-        Spacer(Modifier.height(4.dp))
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (section == 0) {
-                FeedSections(feedViewModel, libraryViewModel)
-            } else {
-                LibraryScreen(
-                    mode = LibraryMode.SERVER,
-                    embedded = true,
-                    active = active,
-                    viewModel = libraryViewModel,
-                )
             }
-        }
-    }
+        },
+    )
 }
 
 @Composable
@@ -150,7 +180,7 @@ private fun FeedSections(feedViewModel: JellyfinFeedViewModel, libraryViewModel:
         }
         else -> LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = FloatingNavDefaults.contentBottomPadding()),
+            contentPadding = PaddingValues(top = LocalTopInset.current, bottom = FloatingNavDefaults.contentBottomPadding()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item(key = "actions") {

@@ -1,5 +1,11 @@
 package com.lastwave.app.ui.library
 
+import com.lastwave.app.data.jellyfin.SearchHits
+import kotlinx.coroutines.delay
+import com.lastwave.app.data.jellyfin.jellyfinItemIdOrNull
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lastwave.app.data.jellyfin.JellyfinRepository
@@ -80,6 +86,8 @@ data class SongsState(
 
 data class TracksState(
     val tracks: List<PlayableTrack> = emptyList(),
+    /** Playlist pages only: entry id for each track, same order as [tracks]. */
+    val entryIds: List<String?> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
 )
@@ -89,6 +97,25 @@ data class ArtistAlbumsState(
     val loading: Boolean = false,
     val error: String? = null,
 )
+
+data class SearchState(
+    val query: String = "",
+    val hits: SearchHits = SearchHits(),
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+private fun SearchHits.matching(q: String): SearchHits {
+    fun JfItem.hit() = name.orEmpty().contains(q, true) || albumArtist.orEmpty().contains(q, true)
+    return SearchHits(
+        albums = albums.filter { it.hit() },
+        artists = artists.filter { it.hit() },
+        playlists = playlists.filter { it.hit() },
+        tracks = tracks.filter {
+            it.title.contains(q, true) || it.artist.contains(q, true) || (it.album ?: "").contains(q, true)
+        },
+    )
+}
 
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
@@ -266,8 +293,13 @@ class LibraryViewModel @Inject constructor(
                 when (detail) {
                     is LibraryDetail.Album ->
                         _detailTracks.value = TracksState(tracks = repository.albumTracks(detail.item.id))
-                    is LibraryDetail.Playlist ->
-                        _detailTracks.value = TracksState(tracks = repository.playlistTracks(detail.item.id))
+                    is LibraryDetail.Playlist -> {
+                        val entries = repository.playlistEntries(detail.item.id)
+                        _detailTracks.value = TracksState(
+                            tracks = entries.map { it.track },
+                            entryIds = entries.map { it.entryId },
+                        )
+                    }
                     is LibraryDetail.LikedSongs ->
                         _detailTracks.value = TracksState(tracks = repository.favoriteTracks())
                     is LibraryDetail.Artist ->
@@ -282,6 +314,161 @@ class LibraryViewModel @Inject constructor(
                 } else {
                     _detailTracks.value = TracksState(error = message)
                 }
+            }
+        }
+    }
+
+    // ---- search ------------------------------------------------------------------------
+
+    private val _search = MutableStateFlow(SearchState())
+    /** Server mode searches the whole server; saved mode filters your saved items. */
+    val search: StateFlow<SearchState> = _search.asStateFlow()
+    private var searchJob: Job? = null
+    private var savedCache: SearchHits? = null
+
+    fun setSearchQuery(query: String) {
+        _search.update { it.copy(query = query) }
+        searchJob?.cancel()
+        if (query.isBlank()) {
+            _search.value = SearchState()
+            return
+        }
+        searchJob = viewModelScope.launch {
+            delay(300)
+            _search.update { it.copy(loading = true, error = null) }
+            try {
+                val hits = if (_mode.value == LibraryMode.SAVED) {
+                    (savedCache ?: repository.savedHits().also { savedCache = it }).matching(query.trim())
+                } else {
+                    repository.searchHits(query.trim())
+                }
+                _search.update { it.copy(hits = hits, loading = false) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _search.update { it.copy(loading = false, error = e.message ?: "Search failed") }
+            }
+        }
+    }
+
+    fun clearSearch() {
+        searchJob?.cancel()
+        savedCache = null
+        _search.value = SearchState()
+    }
+
+    // ---- playlist editing ----------------------------------------------------------------
+
+    private val _events = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    /** One-line results ("Added 3 songs", errors) for the screen to show. */
+    val events: SharedFlow<String> = _events.asSharedFlow()
+
+    private fun playlistId(): String? = (_detailStack.value.lastOrNull() as? LibraryDetail.Playlist)?.item?.id
+
+    private fun launchEdit(failure: String, block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _events.tryEmit("$failure: ${e.message ?: "unknown error"}")
+            }
+        }
+    }
+
+    /** Call when a playlist picker opens so it shows the server's current playlists. */
+    fun refreshPlaylists() = playlistsPaged.reset()
+
+    fun createPlaylist(name: String, tracks: List<PlayableTrack> = emptyList()) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        launchEdit("Couldn't create playlist") {
+            repository.createPlaylist(clean, tracks.mapNotNull { it.jellyfinItemIdOrNull() })
+            playlistsPaged.reset()
+            _events.tryEmit(if (tracks.isEmpty()) "Created “$clean”" else "Created “$clean” with ${tracks.size} songs")
+        }
+    }
+
+    fun addToPlaylist(playlist: JfItem, tracks: List<PlayableTrack>) {
+        val ids = tracks.mapNotNull { it.jellyfinItemIdOrNull() }
+        if (ids.isEmpty()) return
+        launchEdit("Couldn't add to playlist") {
+            repository.addToPlaylist(playlist.id, ids)
+            playlistsPaged.reset()
+            _events.tryEmit("Added ${ids.size} to “${playlist.name.orEmpty()}”")
+        }
+    }
+
+    fun removeFromPlaylist(index: Int) {
+        val id = playlistId() ?: return
+        val state = _detailTracks.value
+        val entry = state.entryIds.getOrNull(index) ?: return
+        launchEdit("Couldn't remove song") {
+            repository.removeFromPlaylist(id, entry)
+            _detailTracks.update {
+                it.copy(
+                    tracks = it.tracks.filterIndexed { i, _ -> i != index },
+                    entryIds = it.entryIds.filterIndexed { i, _ -> i != index },
+                )
+            }
+            playlistsPaged.reset()
+        }
+    }
+
+    /** Moves one song up (-1) or down (+1). The list changes at once; a failure reloads it. */
+    fun moveInPlaylist(index: Int, delta: Int) {
+        val id = playlistId() ?: return
+        val state = _detailTracks.value
+        val target = index + delta
+        val entry = state.entryIds.getOrNull(index) ?: return
+        if (target !in state.tracks.indices) return
+        val tracks = state.tracks.toMutableList().apply { add(target, removeAt(index)) }
+        val entries = state.entryIds.toMutableList().apply { add(target, removeAt(index)) }
+        _detailTracks.value = state.copy(tracks = tracks, entryIds = entries)
+        viewModelScope.launch {
+            try {
+                repository.movePlaylistItem(id, entry, target)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _events.tryEmit("Couldn't move song: ${e.message ?: "unknown error"}")
+                reloadDetail()
+            }
+        }
+    }
+
+    fun renameCurrentPlaylist(name: String) {
+        val id = playlistId() ?: return
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        launchEdit("Couldn't rename playlist") {
+            repository.renamePlaylist(id, clean)
+            _detailStack.update { stack ->
+                stack.map { if (it is LibraryDetail.Playlist && it.item.id == id) LibraryDetail.Playlist(it.item.copy(name = clean)) else it }
+            }
+            playlistsPaged.reset()
+        }
+    }
+
+    fun deleteCurrentPlaylist() {
+        val id = playlistId() ?: return
+        launchEdit("Couldn't delete playlist") {
+            repository.deletePlaylist(id)
+            back()
+            playlistsPaged.reset()
+            _events.tryEmit("Playlist deleted")
+        }
+    }
+
+    /** Un-hearts a song from the Liked songs page. */
+    fun removeFromLiked(index: Int) {
+        val track = _detailTracks.value.tracks.getOrNull(index) ?: return
+        val id = track.jellyfinItemIdOrNull() ?: return
+        launchEdit("Couldn't remove song") {
+            repository.setFavorite(id, false)
+            _detailTracks.update {
+                it.copy(tracks = it.tracks.filterIndexed { i, _ -> i != index })
             }
         }
     }

@@ -1,5 +1,26 @@
 package com.lastwave.app.ui.library
 
+import com.lastwave.app.ui.common.groupPositionFor
+import com.lastwave.app.ui.common.GlassHeaderLayout
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.fillMaxHeight
+import com.lastwave.app.ui.common.ProfileAvatarViewModel
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Add
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -112,74 +133,143 @@ fun LibraryScreen(
     BackHandler(enabled = active && detail != null) { viewModel.back() }
 
     val topModifier = if (embedded) Modifier.fillMaxSize() else Modifier.fillMaxSize().statusBarsPadding()
+
+    // Playlist editing: songs waiting for a playlist to be picked, and the "new playlist" dialog.
+    var pickerTracks by remember { mutableStateOf<List<PlayableTrack>?>(null) }
+    var createWith by remember { mutableStateOf<List<PlayableTrack>?>(null) }
+    val context = LocalContext.current
+    LaunchedEffect(viewModel, active) {
+        if (active) viewModel.events.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
+    val openPicker: (List<PlayableTrack>) -> Unit = { tracks ->
+        viewModel.refreshPlaylists()
+        pickerTracks = tracks
+    }
+
+    pickerTracks?.let { tracks ->
+        PlaylistPickerDialog(
+            viewModel = viewModel,
+            onPick = { viewModel.addToPlaylist(it, tracks); pickerTracks = null },
+            onNew = { createWith = tracks; pickerTracks = null },
+            onDismiss = { pickerTracks = null },
+        )
+    }
+    createWith?.let { seed ->
+        NameDialog(
+            title = "New playlist",
+            initial = "",
+            confirmLabel = "Create",
+            onConfirm = { viewModel.createPlaylist(it, seed); createWith = null },
+            onDismiss = { createWith = null },
+        )
+    }
+
+    CompositionLocalProvider(LocalJellyAddToPlaylist provides openPicker) {
     Box(Modifier.fillMaxSize()) {
         when {
             sessionState is LibrarySession.Loading -> CenteredProgress()
             signedIn != null && detail != null ->
                 DetailPage(signedIn.session, detail!!, viewModel, topModifier)
-            else -> Column(Modifier.fillMaxSize()) {
-                LibraryHeader(viewModel, embedded, onOpenSettings, onOpenDownloads)
-                when {
-                    tab == LibraryTab.PHONE -> PlaylistScreen(
-                        onOpenPlaylist = onOpenPlaylist,
-                        onOpenFeedPlaylist = onOpenFeedPlaylist,
-                        onOpenGenerator = onOpenGenerator,
-                    )
-                    signedIn == null -> SignedOutNotice()
-                    else -> JellyfinTabContent(signedIn.session, tab, viewModel)
-                }
-            }
+            embedded -> LibraryBody(tab, signedIn, viewModel, onOpenPlaylist, onOpenFeedPlaylist, onOpenGenerator)
+            else -> LibraryPage(
+                viewModel, tab, signedIn, onOpenPlaylist, onOpenFeedPlaylist, onOpenGenerator,
+                onOpenSettings, onOpenDownloads, onCreatePlaylist = { createWith = emptyList() },
+            )
         }
     }
+    }
 }
+
+internal val LocalJellyAddToPlaylist = staticCompositionLocalOf<(List<PlayableTrack>) -> Unit> { {} }
 
 // ---- header and tab chips -----------------------------------------------------------------
 
 @Composable
-private fun LibraryHeader(
+private fun LibraryPage(
     viewModel: LibraryViewModel,
-    embedded: Boolean,
+    tab: LibraryTab,
+    signedIn: LibrarySession.SignedIn?,
+    onOpenPlaylist: (Long) -> Unit,
+    onOpenFeedPlaylist: (String) -> Unit,
+    onOpenGenerator: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDownloads: () -> Unit,
+    onCreatePlaylist: () -> Unit,
 ) {
-    val tab by viewModel.tab.collectAsStateWithLifecycle()
     val tabs by viewModel.tabs.collectAsStateWithLifecycle()
-    val chips: @Composable () -> Unit = {
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(tabs) { entry ->
-                FilterChip(
-                    selected = entry == tab,
-                    onClick = { viewModel.selectTab(entry) },
-                    label = { Text(entry.label) },
-                )
-            }
-        }
-    }
-    if (embedded) {
-        // The host (Feed) already draws the header; only the chips are ours.
-        Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-            chips()
-            Spacer(Modifier.height(8.dp))
-        }
-        return
-    }
-    ExpressiveHeader(
-        title = "Library",
-        actions = {
-            JellyHeaderActions(
-                onRefresh = { if (tab != LibraryTab.PHONE) viewModel.refresh() },
-                onOpenDownloads = onOpenDownloads,
-                onOpenSettings = onOpenSettings,
+    val mode by viewModel.mode.collectAsStateWithLifecycle()
+    val search by viewModel.search.collectAsStateWithLifecycle()
+    var searching by rememberSaveable { mutableStateOf(false) }
+    val closeSearch = { searching = false; viewModel.clearSearch() }
+    BackHandler(enabled = searching) { closeSearch() }
+
+    GlassHeaderLayout(
+        modifier = Modifier.fillMaxSize(),
+        header = { headerModifier, backdrop ->
+            ExpressiveHeader(
+                title = "Library",
+                modifier = headerModifier,
+                backdrop = backdrop,
+                actions = {
+                    if (searching) {
+                        HeaderActionIcon(Icons.Filled.Close, "Close search", closeSearch)
+                    } else {
+                        if (mode == LibraryMode.SAVED && tab == LibraryTab.PLAYLISTS) {
+                            HeaderActionIcon(Icons.Filled.Add, "New playlist", onCreatePlaylist)
+                        }
+                        JellyHeaderActions(
+                            onRefresh = { if (tab != LibraryTab.PHONE) viewModel.refresh() },
+                            onSearch = { searching = true },
+                            onOpenDownloads = onOpenDownloads,
+                            onOpenSettings = onOpenSettings,
+                        )
+                    }
+                },
+                bottomContent = {
+                    if (searching) {
+                        JellySearchField(search.query, viewModel::setSearchQuery)
+                    } else {
+                        JellyChipsBar(tabs.map { it.label }, tabs.indexOf(tab).coerceAtLeast(0)) {
+                            viewModel.selectTab(tabs[it])
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                },
             )
         },
-        bottomContent = {
-            chips()
-            Spacer(Modifier.height(8.dp))
+        content = { inset ->
+            CompositionLocalProvider(LocalTopInset provides inset) {
+                if (searching) {
+                    JellySearchResults(signedIn?.session, search, viewModel)
+                } else {
+                    LibraryBody(tab, signedIn, viewModel, onOpenPlaylist, onOpenFeedPlaylist, onOpenGenerator)
+                }
+            }
         },
     )
+}
+
+@Composable
+private fun LibraryBody(
+    tab: LibraryTab,
+    signedIn: LibrarySession.SignedIn?,
+    viewModel: LibraryViewModel,
+    onOpenPlaylist: (Long) -> Unit,
+    onOpenFeedPlaylist: (String) -> Unit,
+    onOpenGenerator: () -> Unit,
+) {
+    when {
+        tab == LibraryTab.PHONE -> Box(Modifier.fillMaxSize().padding(top = LocalTopInset.current)) {
+            PlaylistScreen(
+                onOpenPlaylist = onOpenPlaylist,
+                onOpenFeedPlaylist = onOpenFeedPlaylist,
+                onOpenGenerator = onOpenGenerator,
+                showHeader = false,
+            )
+        }
+        signedIn == null -> SignedOutNotice()
+        else -> JellyfinTabContent(signedIn.session, tab, viewModel)
+    }
 }
 
 /**
@@ -191,9 +281,11 @@ internal fun JellyHeaderActions(
     onRefresh: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenSettings: () -> Unit,
-    avatarUrl: String? = null,
+    onSearch: () -> Unit,
 ) {
+    val avatarUrl by hiltViewModel<ProfileAvatarViewModel>().avatarUrl.collectAsStateWithLifecycle()
     HeaderActionIcon(Icons.Filled.Refresh, "Refresh", onRefresh)
+    HeaderActionIcon(Icons.Filled.Search, "Search", onSearch)
     HeaderActionIcon(Icons.Filled.Download, "Downloads", onOpenDownloads)
     IconButton(onClick = onOpenSettings) {
         com.lastwave.app.ui.home.ProfileAvatar(avatarUrl = avatarUrl, modifier = Modifier.size(38.dp))
@@ -201,7 +293,7 @@ internal fun JellyHeaderActions(
 }
 
 @Composable
-private fun SignedOutNotice() {
+internal fun SignedOutNotice() {
     Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
         Text(
             "Sign in to Jellyfin to browse your server. Your phone's own music is under “On this phone”.",
@@ -266,7 +358,7 @@ private fun PlaylistsGrid(session: JellyfinSession, state: ListState, viewModel:
     LazyVerticalGrid(
         columns = GridCells.Adaptive(150.dp),
         contentPadding = PaddingValues(
-            start = 12.dp, end = 12.dp, top = 4.dp,
+            start = 12.dp, end = 12.dp, top = 4.dp + LocalTopInset.current,
             bottom = FloatingNavDefaults.contentBottomPadding(),
         ),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -364,7 +456,7 @@ internal fun CoverGrid(
         state = gridState,
         columns = GridCells.Adaptive(150.dp),
         contentPadding = PaddingValues(
-            start = 12.dp, end = 12.dp, top = 4.dp,
+            start = 12.dp, end = 12.dp, top = 4.dp + LocalTopInset.current,
             bottom = FloatingNavDefaults.contentBottomPadding(),
         ),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -503,10 +595,15 @@ private fun AllSongsList(viewModel: LibraryViewModel) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = FloatingNavDefaults.contentBottomPadding()),
+        contentPadding = PaddingValues(top = LocalTopInset.current, bottom = FloatingNavDefaults.contentBottomPadding()),
     ) {
         itemsIndexed(state.tracks, key = { index, track -> "${index}_${track.internalTrackId}" }) { index, track ->
-            TrackRow(track, showNumber = false) {
+            val addToPlaylist = LocalJellyAddToPlaylist.current
+            JellyTrackRow(
+                track,
+                groupPositionFor(index, state.tracks.size),
+                actions = listOf(RowAction("Add to playlist") { addToPlaylist(listOf(track)) }),
+            ) {
                 // The queue is what has loaded so far, starting at the tapped song.
                 player.playQueue(state.tracks, index, "All songs", startShuffled = false)
             }
@@ -532,6 +629,32 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
     val overrides by viewModel.favouriteOverrides.collectAsStateWithLifecycle()
     val isFavourite = overrides[item.id] ?: item.isFavorite
     val canFavourite = detail is LibraryDetail.Album || detail is LibraryDetail.Artist
+    val addToPlaylist = LocalJellyAddToPlaylist.current
+    val tracksNow by viewModel.detailTracks.collectAsStateWithLifecycle()
+    var menuOpen by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    if (renaming) {
+        NameDialog(
+            title = "Rename playlist",
+            initial = item.name.orEmpty(),
+            confirmLabel = "Save",
+            onConfirm = { viewModel.renameCurrentPlaylist(it); renaming = false },
+            onDismiss = { renaming = false },
+        )
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete playlist?") },
+            text = { Text("“${item.name.orEmpty()}” will be deleted from your Jellyfin server. The songs themselves stay in your library.") },
+            confirmButton = {
+                TextButton(onClick = { confirmDelete = false; viewModel.deleteCurrentPlaylist() }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+        )
+    }
 
     Column(modifier) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -547,6 +670,31 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                     )
                 }
             }
+            if (detail is LibraryDetail.Playlist || detail is LibraryDetail.Album) {
+                Box {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        if (detail is LibraryDetail.Album) {
+                            DropdownMenuItem(
+                                text = { Text("Add album to playlist") },
+                                enabled = tracksNow.tracks.isNotEmpty(),
+                                onClick = { menuOpen = false; addToPlaylist(tracksNow.tracks) },
+                            )
+                        } else {
+                            DropdownMenuItem(
+                                text = { Text("Rename") },
+                                onClick = { menuOpen = false; renaming = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete playlist") },
+                                onClick = { menuOpen = false; confirmDelete = true },
+                            )
+                        }
+                    }
+                }
+            }
         }
         when (detail) {
             is LibraryDetail.Artist -> ArtistAlbums(session, detail, viewModel)
@@ -560,8 +708,26 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                 TrackList(
                     state = tracksState,
                     sourceLabel = item.name.orEmpty(),
+                    showNumbers = detail is LibraryDetail.Album,
                     emptyText = if (detail is LibraryDetail.LikedSongs) "Heart a song to see it here" else "No songs here",
                     onRetry = viewModel::reloadDetail,
+                    rowActions = { index, track ->
+                        buildList {
+                            add(RowAction("Add to playlist") { addToPlaylist(listOf(track)) })
+                            when (detail) {
+                                is LibraryDetail.Playlist -> {
+                                    if (index > 0) add(RowAction("Move up") { viewModel.moveInPlaylist(index, -1) })
+                                    if (index < tracksState.tracks.lastIndex) {
+                                        add(RowAction("Move down") { viewModel.moveInPlaylist(index, 1) })
+                                    }
+                                    add(RowAction("Remove from playlist") { viewModel.removeFromPlaylist(index) })
+                                }
+                                is LibraryDetail.LikedSongs ->
+                                    add(RowAction("Remove from Liked songs") { viewModel.removeFromLiked(index) })
+                                else -> Unit
+                            }
+                        }
+                    },
                     header = {
                         DetailHeader(
                             title = item.name.orEmpty(),
@@ -669,8 +835,10 @@ private fun DetailHeader(
 private fun TrackList(
     state: TracksState,
     sourceLabel: String,
+    showNumbers: Boolean,
     emptyText: String,
     onRetry: () -> Unit,
+    rowActions: (index: Int, track: PlayableTrack) -> List<RowAction>,
     header: (@Composable () -> Unit)?,
 ) {
     val player = LocalMusicPlayer.current
@@ -724,48 +892,95 @@ private fun TrackList(
                 }
             }
             else -> itemsIndexed(state.tracks, key = { index, track -> "${index}_${track.internalTrackId}" }) { index, track ->
-                TrackRow(track) { player.playQueue(state.tracks, index, sourceLabel, startShuffled = false) }
+                JellyTrackRow(
+                    track,
+                    groupPositionFor(index, state.tracks.size),
+                    number = if (showNumbers) track.trackNumber else null,
+                    actions = rowActions(index, track),
+                ) {
+                    player.playQueue(state.tracks, index, sourceLabel, startShuffled = false)
+                }
             }
         }
     }
 }
 
+// ---- playlist dialogs ---------------------------------------------------------------------------
+
 @Composable
-private fun TrackRow(track: PlayableTrack, showNumber: Boolean = true, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (showNumber) {
-            Text(
-                track.trackNumber?.toString().orEmpty(),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.width(32.dp),
+private fun NameDialog(
+    title: String,
+    initial: String,
+    confirmLabel: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                singleLine = true,
+                label = { Text("Name") },
             )
-        }
-        Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
-            Text(track.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                track.artist,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        track.durationMs?.let { ms ->
-            Text(
-                formatDuration(ms),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(name) }, enabled = name.isNotBlank()) { Text(confirmLabel) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun PlaylistPickerDialog(
+    viewModel: LibraryViewModel,
+    onPick: (JfItem) -> Unit,
+    onNew: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val state by viewModel.playlists.collectAsStateWithLifecycle()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add to playlist") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                item(key = "new") {
+                    Text(
+                        "New playlist…",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.fillMaxWidth().clickable(onClick = onNew).padding(vertical = 14.dp),
+                    )
+                }
+                if (state.loading && state.items.isEmpty()) {
+                    item(key = "loading") {
+                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
+                state.error?.let { message ->
+                    item(key = "error") {
+                        Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
+                    }
+                }
+                items(state.items, key = { it.id }) { playlist ->
+                    Text(
+                        playlist.name.orEmpty().ifBlank { "Untitled" },
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth().clickable { onPick(playlist) }.padding(vertical = 14.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 internal fun formatDuration(ms: Long): String {
