@@ -44,11 +44,33 @@ class JellyfinRepository @Inject constructor(
     private suspend fun requireSession(): JellyfinSession =
         store.current() ?: throw JellyfinException("Not signed in to Jellyfin")
 
-    suspend fun albums(startIndex: Int = 0, limit: Int = 100, favoritesOnly: Boolean = false) =
-        api.albums(requireSession(), startIndex, limit, favoritesOnly)
+    suspend fun albums(
+        startIndex: Int = 0,
+        limit: Int = 100,
+        favoritesOnly: Boolean = false,
+        sortBy: String = "SortName",
+        sortOrder: String = "Ascending",
+    ) = api.albums(requireSession(), startIndex, limit, favoritesOnly, sortBy, sortOrder)
 
-    suspend fun artists(startIndex: Int = 0, limit: Int = 100) =
-        api.albumArtists(requireSession(), startIndex, limit)
+    suspend fun recentlyAddedAlbums(limit: Int = 20) = albums(0, limit, false, "DateCreated", "Descending")
+    suspend fun randomAlbums(limit: Int = 20) = albums(0, limit, false, "Random", "Ascending")
+
+    /** One page of every song on the server, already mapped for the player. */
+    suspend fun songsPage(startIndex: Int, limit: Int): Pair<List<PlayableTrack>, Int> {
+        val s = requireSession()
+        val kbps = store.currentStreamKbps()
+        val page = api.tracks(s, startIndex, limit)
+        return page.items.map { toPlayable(s, it, kbps) } to page.total
+    }
+
+    suspend fun randomTracks(limit: Int = 100): List<PlayableTrack> {
+        val s = requireSession()
+        val kbps = store.currentStreamKbps()
+        return api.tracks(s, 0, limit, sortBy = "Random").items.map { toPlayable(s, it, kbps) }
+    }
+
+    suspend fun artists(startIndex: Int = 0, limit: Int = 100, favoritesOnly: Boolean = false) =
+        api.albumArtists(requireSession(), startIndex, limit, favoritesOnly)
 
     suspend fun artistAlbums(artistId: String) = api.artistAlbums(requireSession(), artistId)
     suspend fun playlists() = api.playlists(requireSession())
@@ -74,6 +96,12 @@ class JellyfinRepository @Inject constructor(
 
     suspend fun setFavorite(itemId: String, favorite: Boolean) =
         api.setFavorite(requireSession(), itemId, favorite)
+
+    /** Cover art URL for a row, or null when the item has no picture. No network call. */
+    fun coverUrl(session: JellyfinSession, item: JfItem, size: Int = 400): String? {
+        val tag = item.imageTags["Primary"] ?: return null
+        return api.imageUrl(session, item.id, tag, size)
+    }
 
     /** Cover art URL for an album/artist/playlist row. */
     suspend fun imageUrl(item: JfItem, size: Int = 600): String? {

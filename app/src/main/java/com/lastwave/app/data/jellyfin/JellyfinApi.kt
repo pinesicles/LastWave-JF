@@ -135,14 +135,16 @@ class JellyfinApi @Inject constructor(
         startIndex: Int = 0,
         limit: Int = 100,
         favoritesOnly: Boolean = false,
+        sortBy: String = "SortName",
+        sortOrder: String = "Ascending",
     ): JfPage = getItems(
         session,
         urlBuilder(session.serverUrl, "Items").apply {
             addQueryParameter("userId", session.userId)
             addQueryParameter("includeItemTypes", "MusicAlbum")
             addQueryParameter("recursive", "true")
-            addQueryParameter("sortBy", "SortName")
-            addQueryParameter("sortOrder", "Ascending")
+            addQueryParameter("sortBy", sortBy)
+            addQueryParameter("sortOrder", sortOrder)
             addQueryParameter("fields", "ChildCount,ProviderIds")
             addQueryParameter("startIndex", startIndex.toString())
             addQueryParameter("limit", limit.toString())
@@ -151,10 +153,16 @@ class JellyfinApi @Inject constructor(
         }.build(),
     )
 
-    suspend fun albumArtists(session: JellyfinSession, startIndex: Int = 0, limit: Int = 100): JfPage = getItems(
+    suspend fun albumArtists(
+        session: JellyfinSession,
+        startIndex: Int = 0,
+        limit: Int = 100,
+        favoritesOnly: Boolean = false,
+    ): JfPage = getItems(
         session,
         urlBuilder(session.serverUrl, "Artists", "AlbumArtists").apply {
             addQueryParameter("userId", session.userId)
+            if (favoritesOnly) addQueryParameter("isFavorite", "true")
             addQueryParameter("sortBy", "SortName")
             addQueryParameter("sortOrder", "Ascending")
             addQueryParameter("startIndex", startIndex.toString())
@@ -205,7 +213,27 @@ class JellyfinApi @Inject constructor(
         }.build(),
     )
 
-    suspend fun favoriteTracks(session: JellyfinSession, startIndex: Int = 0, limit: Int = 200): JfPage = getItems(
+    /** Every song on the server (or a random sample with sortBy = "Random"). */
+    suspend fun tracks(
+        session: JellyfinSession,
+        startIndex: Int = 0,
+        limit: Int = 100,
+        sortBy: String = "SortName",
+    ): JfPage = getItems(
+        session,
+        urlBuilder(session.serverUrl, "Items").apply {
+            addQueryParameter("userId", session.userId)
+            addQueryParameter("includeItemTypes", "Audio")
+            addQueryParameter("recursive", "true")
+            addQueryParameter("sortBy", sortBy)
+            addQueryParameter("fields", ITEM_FIELDS)
+            addQueryParameter("startIndex", startIndex.toString())
+            addQueryParameter("limit", limit.toString())
+            addQueryParameter("enableTotalRecordCount", "true")
+        }.build(),
+    )
+
+    suspend fun favoriteTracks(session: JellyfinSession, startIndex: Int = 0, limit: Int = 1000): JfPage = getItems(
         session,
         urlBuilder(session.serverUrl, "Items").apply {
             addQueryParameter("userId", session.userId)

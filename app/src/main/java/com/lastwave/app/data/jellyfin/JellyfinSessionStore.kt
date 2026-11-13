@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import java.io.IOException
@@ -58,9 +59,9 @@ class JellyfinSessionStore @Inject constructor(
                 serverVersion = p[Keys.SERVER_VERSION].orEmpty(),
             )
         }
-    }
+    }.distinctUntilChanged()
 
-    val streamKbps: Flow<Int> = data.map { it[Keys.STREAM_KBPS] ?: 0 }
+    val streamKbps: Flow<Int> = data.map { it[Keys.STREAM_KBPS] ?: 0 }.distinctUntilChanged()
 
     suspend fun current(): JellyfinSession? = session.first()
 
