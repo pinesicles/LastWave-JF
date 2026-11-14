@@ -483,6 +483,7 @@ dependencies {
 
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
     ksp(libs.room.compiler)
 
     implementation(libs.datastore.preferences)

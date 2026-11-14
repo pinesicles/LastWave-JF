@@ -1,5 +1,12 @@
 package com.lastwave.app.ui.library
 
+import com.lastwave.app.data.jellyfin.download.COLLECTION_PLAYLIST
+import com.lastwave.app.data.jellyfin.download.COLLECTION_ALBUM
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Delete
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import com.lastwave.app.ui.common.groupPositionFor
 import com.lastwave.app.ui.common.GlassHeaderLayout
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -349,7 +356,51 @@ private fun JellyfinTabContent(session: JellyfinSession, tab: LibraryTab, viewMo
             )
         }
         LibraryTab.SONGS -> AllSongsList(viewModel)
+        LibraryTab.DOWNLOADED -> DownloadedGrid(session, viewModel)
         LibraryTab.PHONE -> Unit
+    }
+}
+
+@Composable
+private fun DownloadedGrid(session: JellyfinSession, viewModel: LibraryViewModel) {
+    val collections by viewModel.downloadedCollections.collectAsStateWithLifecycle()
+    val progress by viewModel.downloadProgress.collectAsStateWithLifecycle()
+    if (collections.isEmpty()) {
+        Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+            Text(
+                "Nothing downloaded yet. Open an album or playlist and tap the download button.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+        return
+    }
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(150.dp),
+        contentPadding = PaddingValues(
+            start = 12.dp, end = 12.dp, top = 4.dp + LocalTopInset.current,
+            bottom = FloatingNavDefaults.contentBottomPadding(),
+        ),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        items(collections, key = { it.id }) { c ->
+            val p = progress[c.id]
+            val item = JfItem(id = c.id, name = c.name, albumArtist = c.subtitle)
+            CoverCard(
+                title = c.name,
+                subtitle = if (p != null && p.done < p.total) "Downloading ${p.done}/${p.total}"
+                else c.subtitle ?: if (c.type == COLLECTION_PLAYLIST) "Playlist" else null,
+                coverUrl = viewModel.coverUrl(session, item),
+                round = false,
+                onClick = {
+                    viewModel.open(
+                        if (c.type == COLLECTION_ALBUM) LibraryDetail.Album(item) else LibraryDetail.Playlist(item),
+                    )
+                },
+            )
+        }
     }
 }
 
@@ -628,12 +679,72 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
     val item = detail.item
     val overrides by viewModel.favouriteOverrides.collectAsStateWithLifecycle()
     val isFavourite = overrides[item.id] ?: item.isFavorite
-    val canFavourite = detail is LibraryDetail.Album || detail is LibraryDetail.Artist
+    val canFavourite = detail is LibraryDetail.Artist
     val addToPlaylist = LocalJellyAddToPlaylist.current
     val tracksNow by viewModel.detailTracks.collectAsStateWithLifecycle()
     var menuOpen by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
+    var confirmRemoveDownload by remember { mutableStateOf(false) }
+    val downloaded by viewModel.downloadedCollections.collectAsStateWithLifecycle()
+    val progressMap by viewModel.downloadProgress.collectAsStateWithLifecycle()
+    @Suppress("UNUSED_VARIABLE") val coverTags by viewModel.coverTags.collectAsStateWithLifecycle()
+    val collection = downloaded.firstOrNull { it.id == item.id }
+    val progress = progressMap[item.id]
+    val context = LocalContext.current
+    val coverPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+            val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+            if (bytes != null) viewModel.changeCover(bytes, mime)
+        }
+    }
+    val collectionType = if (detail is LibraryDetail.Album) COLLECTION_ALBUM else COLLECTION_PLAYLIST
+    val headerActions: (@Composable () -> Unit)? =
+        if (detail is LibraryDetail.Album || detail is LibraryDetail.Playlist) {
+            @Composable {
+                DetailActionButtons(
+                    favourite = isFavourite,
+                    onFavourite = { viewModel.toggleFavourite(item) },
+                    downloaded = collection != null,
+                    downloadFraction = progress?.takeIf { it.done < it.total }?.let { it.done.toFloat() / it.total.coerceAtLeast(1) },
+                    onDownload = {
+                        // Tapping again retries failed songs; otherwise offers to remove the download.
+                        if (collection == null || (progress?.failed ?: 0) > 0) viewModel.downloadCollection(item, collectionType)
+                        else confirmRemoveDownload = true
+                    },
+                )
+            }
+        } else null
+    val editTrailing: (@Composable (Int) -> Unit)? =
+        if (editing && detail is LibraryDetail.Playlist) {
+            @Composable { index: Int ->
+                Row {
+                    IconButton(onClick = { viewModel.moveInPlaylist(index, -1) }, enabled = index > 0) {
+                        Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move up")
+                    }
+                    IconButton(onClick = { viewModel.moveInPlaylist(index, 1) }, enabled = index < tracksNow.tracks.lastIndex) {
+                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move down")
+                    }
+                    IconButton(onClick = { viewModel.removeFromPlaylist(index) }) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Remove")
+                    }
+                }
+            }
+        } else null
+
+    if (confirmRemoveDownload) {
+        AlertDialog(
+            onDismissRequest = { confirmRemoveDownload = false },
+            title = { Text("Remove download?") },
+            text = { Text("The songs are deleted from this phone unless another downloaded album or playlist uses them. Nothing changes on your server.") },
+            confirmButton = {
+                TextButton(onClick = { confirmRemoveDownload = false; viewModel.removeDownload(item.id) }) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { confirmRemoveDownload = false }) { Text("Cancel") } },
+        )
+    }
 
     if (renaming) {
         NameDialog(
@@ -662,6 +773,7 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
             }
             Spacer(Modifier.weight(1f))
+            if (editing) TextButton(onClick = { editing = false }) { Text("Done") }
             if (canFavourite) {
                 IconButton(onClick = { viewModel.toggleFavourite(item) }) {
                     Icon(
@@ -684,9 +796,36 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                             )
                         } else {
                             DropdownMenuItem(
+                                text = { Text("Reorder songs") },
+                                onClick = { menuOpen = false; editing = true },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Rename") },
                                 onClick = { menuOpen = false; renaming = true },
                             )
+                            DropdownMenuItem(
+                                text = { Text("Change cover") },
+                                onClick = { menuOpen = false; coverPicker.launch("image/*") },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Add all to another playlist") },
+                                enabled = tracksNow.tracks.isNotEmpty(),
+                                onClick = { menuOpen = false; addToPlaylist(tracksNow.tracks) },
+                            )
+                        }
+                        if (collection != null) {
+                            if (detail is LibraryDetail.Playlist) {
+                                DropdownMenuItem(
+                                    text = { Text(if (collection.autoSync) "Stop keeping in sync" else "Keep downloads in sync") },
+                                    onClick = { menuOpen = false; viewModel.setKeepInSync(item.id, !collection.autoSync) },
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("Remove download") },
+                                onClick = { menuOpen = false; confirmRemoveDownload = true },
+                            )
+                        }
+                        if (detail is LibraryDetail.Playlist) {
                             DropdownMenuItem(
                                 text = { Text("Delete playlist") },
                                 onClick = { menuOpen = false; confirmDelete = true },
@@ -711,19 +850,20 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                     showNumbers = detail is LibraryDetail.Album,
                     emptyText = if (detail is LibraryDetail.LikedSongs) "Heart a song to see it here" else "No songs here",
                     onRetry = viewModel::reloadDetail,
+                    trailing = editTrailing,
                     rowActions = { index, track ->
                         buildList {
                             add(RowAction("Add to playlist") { addToPlaylist(listOf(track)) })
                             when (detail) {
                                 is LibraryDetail.Playlist -> {
-                                    if (index > 0) add(RowAction("Move up") { viewModel.moveInPlaylist(index, -1) })
+                                    if (index > 0) add(RowAction("Move up", Icons.Filled.KeyboardArrowUp) { viewModel.moveInPlaylist(index, -1) })
                                     if (index < tracksState.tracks.lastIndex) {
-                                        add(RowAction("Move down") { viewModel.moveInPlaylist(index, 1) })
+                                        add(RowAction("Move down", Icons.Filled.KeyboardArrowDown) { viewModel.moveInPlaylist(index, 1) })
                                     }
-                                    add(RowAction("Remove from playlist") { viewModel.removeFromPlaylist(index) })
+                                    add(RowAction("Remove from playlist", Icons.Filled.Delete) { viewModel.removeFromPlaylist(index) })
                                 }
                                 is LibraryDetail.LikedSongs ->
-                                    add(RowAction("Remove from Liked songs") { viewModel.removeFromLiked(index) })
+                                    add(RowAction("Remove from Liked songs", Icons.Filled.Delete) { viewModel.removeFromLiked(index) })
                                 else -> Unit
                             }
                         }
@@ -734,6 +874,7 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                             subtitle = subtitle,
                             coverUrl = viewModel.coverUrl(session, item, 600),
                             heart = detail is LibraryDetail.LikedSongs,
+                            actions = headerActions,
                         )
                     },
                 )
@@ -788,6 +929,7 @@ private fun DetailHeader(
     coverUrl: String?,
     round: Boolean = false,
     heart: Boolean = false,
+    actions: (@Composable () -> Unit)? = null,
 ) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -825,6 +967,10 @@ private fun DetailHeader(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (actions != null) {
+                Spacer(Modifier.height(10.dp))
+                actions()
+            }
         }
     }
 }
@@ -839,6 +985,7 @@ private fun TrackList(
     emptyText: String,
     onRetry: () -> Unit,
     rowActions: (index: Int, track: PlayableTrack) -> List<RowAction>,
+    trailing: (@Composable (Int) -> Unit)? = null,
     header: (@Composable () -> Unit)?,
 ) {
     val player = LocalMusicPlayer.current
@@ -897,6 +1044,7 @@ private fun TrackList(
                     groupPositionFor(index, state.tracks.size),
                     number = if (showNumbers) track.trackNumber else null,
                     actions = rowActions(index, track),
+                    trailing = if (trailing != null) { @Composable { trailing(index) } } else null,
                 ) {
                     player.playQueue(state.tracks, index, sourceLabel, startShuffled = false)
                 }

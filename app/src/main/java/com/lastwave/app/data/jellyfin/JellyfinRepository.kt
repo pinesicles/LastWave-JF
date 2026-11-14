@@ -23,6 +23,7 @@ data class SearchHits(
 class JellyfinRepository @Inject constructor(
     private val api: JellyfinApi,
     private val store: JellyfinSessionStore,
+    private val downloads: com.lastwave.app.data.jellyfin.download.JellyDownloads,
 ) {
     val session = store.session
     val streamKbps = store.streamKbps
@@ -145,6 +146,33 @@ class JellyfinRepository @Inject constructor(
         )
     }
 
+    /** Downloaded songs of an album/playlist, and whether every song has finished downloading. */
+    suspend fun localCollection(id: String): Pair<List<PlayableTrack>, Boolean> {
+        val rows = downloads.tracksOf(id)
+        val playable = rows.mapNotNull { t ->
+            val uri = downloads.localUri(t.itemId) ?: return@mapNotNull null
+            PlayableTrack(
+                title = t.title,
+                artist = t.artist,
+                album = t.album,
+                artworkUrl = downloads.localCover(t.albumId),
+                internalTrackId = JELLYFIN_TRACK_PREFIX + t.itemId,
+                playbackUrl = uri,
+                durationMs = t.durationMs,
+                trackNumber = t.trackNumber,
+            )
+        }
+        return playable to (rows.isNotEmpty() && playable.size == rows.size)
+    }
+
+    suspend fun setItemImage(itemId: String, bytes: ByteArray, mime: String) =
+        api.setItemImage(requireSession(), itemId, bytes, mime)
+
+    fun coverUrlForTag(session: JellyfinSession, itemId: String, tag: String, size: Int = 400): String =
+        api.imageUrl(session, itemId, tag, size)
+
+    fun localCover(id: String): String? = downloads.localCover(id)
+
     suspend fun favoriteTracks(): List<PlayableTrack> {
         val s = requireSession()
         val kbps = store.currentStreamKbps()
@@ -175,14 +203,15 @@ class JellyfinRepository @Inject constructor(
         // Tracks without their own cover use the album's.
         val artId = if (item.imageTags.containsKey("Primary")) item.id else (item.albumId ?: item.id)
         val artTag = item.imageTags["Primary"] ?: item.albumPrimaryImageTag
+        val local = downloads.localUri(item.id)
         return PlayableTrack(
             title = item.name.orEmpty().ifBlank { "Unknown track" },
             artist = artistText.ifBlank { "Unknown artist" },
             album = item.album,
-            artworkUrl = api.imageUrl(session, artId, artTag),
+            artworkUrl = downloads.localCover(item.albumId ?: item.id) ?: api.imageUrl(session, artId, artTag),
             internalTrackId = JELLYFIN_TRACK_PREFIX + item.id,
-            playbackUrl = target.url,
-            playbackMimeType = target.mimeType,
+            playbackUrl = local ?: target.url,
+            playbackMimeType = if (local != null) null else target.mimeType,
             durationMs = item.durationMs,
             trackNumber = item.trackNumber,
         )

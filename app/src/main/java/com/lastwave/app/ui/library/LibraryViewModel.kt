@@ -1,5 +1,10 @@
 package com.lastwave.app.ui.library
 
+import com.lastwave.app.data.jellyfin.download.JfCollectionEntity
+import com.lastwave.app.data.jellyfin.download.JellyDownloads
+import com.lastwave.app.data.jellyfin.download.CollectionProgress
+import com.lastwave.app.data.jellyfin.JellyfinException
+import kotlinx.coroutines.withTimeoutOrNull
 import com.lastwave.app.data.jellyfin.SearchHits
 import kotlinx.coroutines.delay
 import com.lastwave.app.data.jellyfin.jellyfinItemIdOrNull
@@ -37,11 +42,12 @@ enum class LibraryTab(val label: String) {
     ALBUMS("Albums"),
     ARTISTS("Artists"),
     SONGS("Songs"),
+    DOWNLOADED("Downloaded"),
     PHONE("On this phone"),
 }
 
 fun tabsFor(mode: LibraryMode): List<LibraryTab> = when (mode) {
-    LibraryMode.SAVED -> listOf(LibraryTab.PLAYLISTS, LibraryTab.ALBUMS, LibraryTab.ARTISTS, LibraryTab.PHONE)
+    LibraryMode.SAVED -> listOf(LibraryTab.PLAYLISTS, LibraryTab.ALBUMS, LibraryTab.ARTISTS, LibraryTab.DOWNLOADED, LibraryTab.PHONE)
     LibraryMode.SERVER -> listOf(LibraryTab.ALBUMS, LibraryTab.ARTISTS, LibraryTab.SONGS)
 }
 
@@ -120,6 +126,7 @@ private fun SearchHits.matching(q: String): SearchHits {
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
     private val repository: JellyfinRepository,
+    private val downloads: JellyDownloads,
 ) : ViewModel() {
 
     val sessionState: StateFlow<LibrarySession> = repository.session
@@ -231,7 +238,7 @@ class LibraryViewModel @Inject constructor(
             LibraryTab.ALBUMS -> if (!albumsPaged.state.value.loaded) albumsPaged.loadMore()
             LibraryTab.ARTISTS -> if (!artistsPaged.state.value.loaded) artistsPaged.loadMore()
             LibraryTab.SONGS -> if (!_songs.value.loaded) loadMoreSongs()
-            LibraryTab.PHONE -> Unit
+            LibraryTab.DOWNLOADED, LibraryTab.PHONE -> Unit
         }
     }
 
@@ -245,7 +252,7 @@ class LibraryViewModel @Inject constructor(
                 _songs.value = SongsState()
                 loadMoreSongs()
             }
-            LibraryTab.PHONE -> Unit
+            LibraryTab.DOWNLOADED, LibraryTab.PHONE -> Unit
         }
     }
 
@@ -284,6 +291,19 @@ class LibraryViewModel @Inject constructor(
         return true
     }
 
+    /** A fully downloaded album opens instantly from the phone; otherwise ask the server. */
+    private suspend fun albumTracks(id: String): List<PlayableTrack> {
+        val (local, complete) = repository.localCollection(id)
+        if (complete) return local
+        return try {
+            repository.albumTracks(id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (local.isNotEmpty()) local else throw e
+        }
+    }
+
     private fun loadDetail(detail: LibraryDetail) {
         detailJob?.cancel()
         _detailTracks.value = TracksState(loading = detail !is LibraryDetail.Artist)
@@ -292,13 +312,29 @@ class LibraryViewModel @Inject constructor(
             try {
                 when (detail) {
                     is LibraryDetail.Album ->
-                        _detailTracks.value = TracksState(tracks = repository.albumTracks(detail.item.id))
+                        _detailTracks.value = TracksState(tracks = albumTracks(detail.item.id))
                     is LibraryDetail.Playlist -> {
-                        val entries = repository.playlistEntries(detail.item.id)
-                        _detailTracks.value = TracksState(
-                            tracks = entries.map { it.track },
-                            entryIds = entries.map { it.entryId },
-                        )
+                        val id = detail.item.id
+                        val entries = try {
+                            withTimeoutOrNull(8_000) { repository.playlistEntries(id) }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            null
+                        }
+                        if (entries != null) {
+                            _detailTracks.value = TracksState(
+                                tracks = entries.map { it.track },
+                                entryIds = entries.map { it.entryId },
+                            )
+                            // A playlist kept in sync picks up changes made elsewhere.
+                            launch { runCatching { downloads.sync(id) } }
+                        } else {
+                            // Server slow or unreachable: show the downloaded copy (not editable).
+                            val (local, _) = repository.localCollection(id)
+                            if (local.isEmpty()) throw JellyfinException("Couldn't reach the server")
+                            _detailTracks.value = TracksState(tracks = local, entryIds = local.map { null })
+                        }
                     }
                     is LibraryDetail.LikedSongs ->
                         _detailTracks.value = TracksState(tracks = repository.favoriteTracks())
@@ -395,6 +431,7 @@ class LibraryViewModel @Inject constructor(
         if (ids.isEmpty()) return
         launchEdit("Couldn't add to playlist") {
             repository.addToPlaylist(playlist.id, ids)
+            runCatching { downloads.sync(playlist.id) }
             playlistsPaged.reset()
             _events.tryEmit("Added ${ids.size} to “${playlist.name.orEmpty()}”")
         }
@@ -406,6 +443,7 @@ class LibraryViewModel @Inject constructor(
         val entry = state.entryIds.getOrNull(index) ?: return
         launchEdit("Couldn't remove song") {
             repository.removeFromPlaylist(id, entry)
+            runCatching { downloads.sync(id) }
             _detailTracks.update {
                 it.copy(
                     tracks = it.tracks.filterIndexed { i, _ -> i != index },
@@ -429,6 +467,7 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 repository.movePlaylistItem(id, entry, target)
+                runCatching { downloads.sync(id) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -455,6 +494,7 @@ class LibraryViewModel @Inject constructor(
         val id = playlistId() ?: return
         launchEdit("Couldn't delete playlist") {
             repository.deletePlaylist(id)
+            runCatching { downloads.remove(id) }
             back()
             playlistsPaged.reset()
             _events.tryEmit("Playlist deleted")
@@ -470,6 +510,49 @@ class LibraryViewModel @Inject constructor(
             _detailTracks.update {
                 it.copy(tracks = it.tracks.filterIndexed { i, _ -> i != index })
             }
+        }
+    }
+
+    // ---- downloads and covers -------------------------------------------------------------
+
+    val downloadedCollections: StateFlow<List<JfCollectionEntity>> =
+        downloads.collections.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val downloadProgress: StateFlow<Map<String, CollectionProgress>> =
+        downloads.progress.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    private val _coverTags = MutableStateFlow<Map<String, String>>(emptyMap())
+    val coverTags: StateFlow<Map<String, String>> = _coverTags.asStateFlow()
+
+    /** Saves an album/playlist for offline use. Downloading also hearts it, so it shows up as saved. */
+    fun downloadCollection(item: JfItem, type: String) {
+        launchEdit("Couldn't start download") {
+            downloads.download(item, type)
+            if (!(_favouriteOverrides.value[item.id] ?: item.isFavorite)) {
+                repository.setFavorite(item.id, true)
+                _favouriteOverrides.update { it + (item.id to true) }
+            }
+            _events.tryEmit("Downloading “${item.name.orEmpty()}”")
+        }
+    }
+
+    fun removeDownload(id: String) {
+        launchEdit("Couldn't remove download") {
+            downloads.remove(id)
+            _events.tryEmit("Download removed")
+        }
+    }
+
+    fun setKeepInSync(id: String, on: Boolean) {
+        launchEdit("Couldn't change sync") { downloads.setAutoSync(id, on) }
+    }
+
+    fun changeCover(bytes: ByteArray, mime: String) {
+        val id = playlistId() ?: return
+        launchEdit("Couldn't change cover") {
+            repository.setItemImage(id, bytes, mime)
+            _coverTags.update { it + (id to "v${System.currentTimeMillis()}") }
+            playlistsPaged.reset()
+            _events.tryEmit("Cover updated")
         }
     }
 
@@ -491,8 +574,12 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    fun coverUrl(session: JellyfinSession, item: JfItem, size: Int = 400): String? =
-        repository.coverUrl(session, item, size)
+    /** A freshly uploaded cover, then the copy on the phone (works offline), then the server's. */
+    fun coverUrl(session: JellyfinSession, item: JfItem, size: Int = 400): String? {
+        _coverTags.value[item.id]?.let { return repository.coverUrlForTag(session, item.id, it, size) }
+        repository.localCover(item.id)?.let { return it }
+        return repository.coverUrl(session, item, size)
+    }
 
     private companion object {
         const val PAGE = 120

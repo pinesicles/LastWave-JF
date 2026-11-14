@@ -8,6 +8,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.JsonObject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl
@@ -348,6 +349,55 @@ class JellyfinApi @Inject constructor(
     suspend fun deleteItem(session: JellyfinSession, itemId: String) {
         val url = urlBuilder(session.serverUrl, "Items", itemId).build()
         execute(authed(session, url).delete().build())
+    }
+
+    /**
+     * Streams [url] into [dest], resuming from its current length when the server supports Range.
+     * Used for song downloads (dest is a ".part" file) and cover art.
+     */
+    suspend fun downloadToFile(session: JellyfinSession, url: String, dest: java.io.File, onBytes: (Long) -> Unit): Long =
+        withContext(Dispatchers.IO) {
+            val client = http.newBuilder()
+                .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+            val have = if (dest.exists()) dest.length() else 0L
+            val builder = Request.Builder().url(url).header("Authorization", authHeader(session.deviceId, session.token))
+            if (have > 0) builder.header("Range", "bytes=$have-")
+            try {
+                client.newCall(builder.get().build()).execute().use { r ->
+                    // 416: the partial file is already the whole file.
+                    if (r.code == 416 && have > 0) return@withContext have
+                    if (!r.isSuccessful) throw JellyfinException("Server returned HTTP ${r.code}", r.code)
+                    val body = r.body ?: throw JellyfinException("Empty response from server")
+                    val append = r.code == 206
+                    java.io.FileOutputStream(dest, append).use { out ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = if (append) have else 0L
+                        body.byteStream().use { input ->
+                            while (true) {
+                                val n = input.read(buffer)
+                                if (n < 0) break
+                                out.write(buffer, 0, n)
+                                total += n
+                                onBytes(total)
+                                kotlin.coroutines.coroutineContext.ensureActive()
+                            }
+                        }
+                    }
+                    dest.length()
+                }
+            } catch (e: IOException) {
+                throw JellyfinException("Couldn't reach the server: ${e.message ?: "network error"}", cause = e)
+            }
+        }
+
+    /** Sets a playlist/album cover from raw image bytes. */
+    suspend fun setItemImage(session: JellyfinSession, itemId: String, bytes: ByteArray, mime: String) {
+        val url = urlBuilder(session.serverUrl, "Items", itemId, "Images", "Primary").build()
+        val body = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+            .toRequestBody(mime.toMediaType())
+        execute(authed(session, url).post(body).build())
     }
 
     // ---- URL builders (no network) ---------------------------------------

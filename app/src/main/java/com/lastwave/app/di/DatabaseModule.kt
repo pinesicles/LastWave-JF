@@ -335,6 +335,7 @@ object DatabaseModule {
                 migration12To13,
                 migration13To14,
                 migration14To15,
+                com.lastwave.app.data.jellyfin.download.MIGRATION_15_16,
             )
             .build()
 
@@ -355,6 +356,11 @@ object DatabaseModule {
     @Singleton
     fun provideDownloadedTrackDao(database: AppDatabase): com.lastwave.app.data.local.db.DownloadedTrackDao =
         database.downloadedTrackDao()
+
+    @Provides
+    @Singleton
+    fun provideJellyDownloadDao(database: AppDatabase): com.lastwave.app.data.jellyfin.download.JellyDownloadDao =
+        database.jellyDownloadDao()
 
     @Provides
     @Singleton

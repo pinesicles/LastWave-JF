@@ -54,6 +54,9 @@ import com.lastwave.app.ui.player.LocalAddToPlaylist
 import com.lastwave.app.ui.player.LocalMusicPlayer
 import com.lastwave.app.util.ArtistHelper
 
+/** A row supplied by a caller (JellyWave) that replaces the default YouTube-based rows. */
+class MiniTrayCustomRow(val icon: ImageVector, val label: String, val onClick: () -> Unit)
+
 /**
  * Mini tray opened on long-press (deep press) of a track row on
  * Home / Feed, Search (TRACKS tab) and single track-list screens.
@@ -93,6 +96,7 @@ data class TrackMiniTrayData(
 fun TrackMiniTraySheet(
     data: TrackMiniTrayData,
     onDismiss: () -> Unit,
+    customRows: List<MiniTrayCustomRow>? = null,
     downloadViewModel: DownloadMenuViewModel = hiltViewModel(),
     artistAlbumViewModel: ArtistAlbumMenuViewModel = hiltViewModel(),
 ) {
@@ -192,7 +196,11 @@ fun TrackMiniTraySheet(
             }
             val isDownloading = activeDownloads[downloadKey]?.let { !it.isFinished } == true
 
-            val rows = buildList<@Composable (GroupPosition) -> Unit> {
+            val rows = if (customRows != null) {
+                customRows.map<MiniTrayCustomRow, @Composable (GroupPosition) -> Unit> { r ->
+                    { pos -> MiniTrayRow(r.icon, r.label, position = pos) { onDismiss(); r.onClick() } }
+                }
+            } else buildList<@Composable (GroupPosition) -> Unit> {
                 // 1. Play
                 add { pos -> MiniTrayRow(Icons.Filled.PlayArrow, "Play", position = pos, onClick = ::play) }
                 // 2. Play next — inserts right after current, current song keeps playing

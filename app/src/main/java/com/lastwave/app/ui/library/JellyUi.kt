@@ -1,5 +1,20 @@
 package com.lastwave.app.ui.library
 
+import com.lastwave.app.ui.common.TrackMiniTrayData
+import com.lastwave.app.ui.common.TrackMiniTraySheet
+import com.lastwave.app.ui.common.MiniTrayCustomRow
+import com.lastwave.app.ui.common.HeaderActionIcon
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.QueuePlayNext
+import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -72,7 +87,11 @@ import com.lastwave.app.ui.theme.ExpressivePillShape
 internal val LocalTopInset = compositionLocalOf { 0.dp }
 
 /** One entry in a song's long-press menu. */
-internal class RowAction(val label: String, val onClick: () -> Unit)
+internal class RowAction(
+    val label: String,
+    val icon: ImageVector = Icons.Filled.PlaylistAdd,
+    val onClick: () -> Unit,
+)
 
 /**
  * A song row in LastWave's own list style (grouped card, 50dp artwork, playing bars,
@@ -85,9 +104,11 @@ internal fun JellyTrackRow(
     position: GroupPosition,
     number: Int? = null,
     actions: List<RowAction> = emptyList(),
+    trailing: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
-    val chrome by LocalMusicPlayer.current.chromeState.collectAsStateWithLifecycle()
+    val player = LocalMusicPlayer.current
+    val chrome by player.chromeState.collectAsStateWithLifecycle()
     val isPlaying = chrome.current?.internalTrackId == track.internalTrackId
     val haptics = LocalHapticFeedback.current
     var menu by remember { mutableStateOf(false) }
@@ -164,18 +185,26 @@ internal fun JellyTrackRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                trailing?.invoke()
             }
-            DropdownMenu(
-                expanded = menu,
-                onDismissRequest = { menu = false },
-                shape = RoundedCornerShape(22.dp),
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                tonalElevation = 4.dp,
-                shadowElevation = 10.dp,
-            ) {
-                actions.forEach { action ->
-                    DropdownMenuItem(text = { Text(action.label) }, onClick = { menu = false; action.onClick() })
-                }
+            if (menu) {
+                // Same bottom tray as long-pressing a track on the Stats page.
+                TrackMiniTraySheet(
+                    data = TrackMiniTrayData(
+                        title = track.title,
+                        artist = track.artist,
+                        album = track.album,
+                        artworkUrl = track.artworkUrl,
+                        durationMs = track.durationMs,
+                    ),
+                    customRows = buildList {
+                        add(MiniTrayCustomRow(Icons.Filled.PlayArrow, "Play", onClick))
+                        add(MiniTrayCustomRow(Icons.Filled.QueuePlayNext, "Play next") { player.playNext(track) })
+                        add(MiniTrayCustomRow(Icons.Filled.QueueMusic, "Add to queue") { player.addToQueue(track) })
+                        actions.forEach { add(MiniTrayCustomRow(it.icon, it.label, it.onClick)) }
+                    },
+                    onDismiss = { menu = false },
+                )
             }
         }
     }
@@ -336,6 +365,36 @@ private fun Shelf(
                 round = round,
                 onClick = { onClick(item) },
                 modifier = Modifier.width(140.dp),
+            )
+        }
+    }
+}
+
+/** Save (heart) and Download buttons shown under an album/playlist title. */
+@Composable
+internal fun DetailActionButtons(
+    favourite: Boolean,
+    onFavourite: () -> Unit,
+    downloaded: Boolean,
+    /** 0..1 while downloading, null when idle or finished. */
+    downloadFraction: Float?,
+    onDownload: () -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        HeaderActionIcon(
+            if (favourite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+            if (favourite) "Remove from saved" else "Save",
+            onFavourite,
+        )
+        if (downloadFraction != null) {
+            FilledTonalIconButton(onClick = onDownload) {
+                CircularProgressIndicator(progress = { downloadFraction }, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            }
+        } else {
+            HeaderActionIcon(
+                if (downloaded) Icons.Filled.DownloadDone else Icons.Filled.Download,
+                if (downloaded) "Downloaded" else "Download",
+                onDownload,
             )
         }
     }

@@ -14,8 +14,11 @@ import com.lastwave.app.data.podcast.PodcastProgressEntity
         SongPlayStatsEntity::class,
         RelatedGraphEdgeEntity::class,
         PodcastProgressEntity::class,
+        com.lastwave.app.data.jellyfin.download.JfTrackEntity::class,
+        com.lastwave.app.data.jellyfin.download.JfCollectionEntity::class,
+        com.lastwave.app.data.jellyfin.download.JfCollectionTrackEntity::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -23,6 +26,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun recommendationExclusionDao(): RecommendationExclusionDao
     abstract fun savedPlaylistDao(): SavedPlaylistDao
     abstract fun downloadedTrackDao(): DownloadedTrackDao
+    abstract fun jellyDownloadDao(): com.lastwave.app.data.jellyfin.download.JellyDownloadDao
     abstract fun songPlayStatsDao(): SongPlayStatsDao
     abstract fun relatedGraphDao(): RelatedGraphDao
     abstract fun podcastProgressDao(): PodcastProgressDao
