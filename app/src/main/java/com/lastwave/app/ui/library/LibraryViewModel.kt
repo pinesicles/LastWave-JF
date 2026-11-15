@@ -128,6 +128,7 @@ class LibraryViewModel @Inject constructor(
     private val repository: JellyfinRepository,
     private val downloads: JellyDownloads,
     private val jellyPins: com.lastwave.app.data.jellyfin.JellyPins,
+    private val connectivity: com.lastwave.app.data.jellyfin.JellyConnectivity,
 ) : ViewModel() {
 
     // ---- long-press menu for albums / playlists / artists and pins ------------------------
@@ -183,6 +184,8 @@ class LibraryViewModel @Inject constructor(
         if (_mode.value != null) return
         _mode.value = mode
         _tab.value = tabsFor(mode).first()
+        // No connection: land on what works offline.
+        if (mode == LibraryMode.SAVED && !connectivity.online.value) _tab.value = LibraryTab.DOWNLOADED
     }
 
     fun selectTab(tab: LibraryTab) {
@@ -348,6 +351,10 @@ class LibraryViewModel @Inject constructor(
                         _detailTracks.value = TracksState(tracks = albumTracks(detail.item.id))
                     is LibraryDetail.Playlist -> {
                         val id = detail.item.id
+                        // Downloaded copy first, so a saved playlist opens instantly; the server list replaces it.
+                        runCatching { repository.localCollection(id).first }.getOrNull()
+                            ?.takeIf { it.isNotEmpty() }
+                            ?.let { local -> _detailTracks.value = TracksState(tracks = local, entryIds = local.map { null }) }
                         val entries = try {
                             withTimeoutOrNull(8_000) { repository.playlistEntries(id) }
                         } catch (e: CancellationException) {
@@ -600,6 +607,7 @@ class LibraryViewModel @Inject constructor(
         val id = playlistId() ?: return
         launchEdit("Couldn't change cover") {
             repository.setItemImage(id, bytes, mime)
+            repository.replaceLocalCover(id, bytes)
             _coverTags.update { it + (id to "v${System.currentTimeMillis()}") }
             playlistsPaged.reset()
             _events.tryEmit("Cover updated")

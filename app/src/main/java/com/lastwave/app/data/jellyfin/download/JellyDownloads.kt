@@ -113,6 +113,12 @@ class JellyDownloads @Inject constructor(
     // ---- storage layout ----
 
     private fun root() = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir, "JellyWave")
+    /** A new cover was uploaded: if a downloaded copy exists, replace it so the old one doesn't win after a restart. */
+    fun replaceCover(id: String, bytes: ByteArray) {
+        val f = coverFile(id)
+        if (f.exists()) runCatching { f.writeBytes(bytes) }
+    }
+
     private fun coverFile(id: String) = File(File(root(), ".covers"), "$id.jpg")
 
     private fun safe(name: String?): String {

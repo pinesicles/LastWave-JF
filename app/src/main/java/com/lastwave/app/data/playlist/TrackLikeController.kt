@@ -32,14 +32,17 @@ class TrackLikeController @Inject constructor(
     private val localOfflineRepository: LocalOfflineRepository,
     private val innerTube: InnerTubeMusicApi,
     private val ytAuth: YtMusicAuthManager,
+    private val jellyFavourites: com.lastwave.app.data.jellyfin.JellyFavourites,
     applicationScope: CoroutineScope,
 ) {
     val likedTrackKeys: StateFlow<Set<String>> = combine(
         likedSongsManager.likedTrackKeys,
         localOfflineRepository.likedUrls,
-    ) { onlineKeys, offlineUrls ->
-        if (offlineUrls.isEmpty()) onlineKeys
+        jellyFavourites.keys,
+    ) { onlineKeys, offlineUrls, jellyKeys ->
+        val base = if (offlineUrls.isEmpty()) onlineKeys
         else onlineKeys + offlineUrls.map { "local:$it" }
+        base + jellyKeys
     }.stateIn(
         scope = applicationScope,
         started = SharingStarted.Eagerly,
@@ -57,6 +60,8 @@ class TrackLikeController @Inject constructor(
 
     /** Flips the local heart. Returns the new state; throws when storage could not be updated. */
     suspend fun toggle(track: PlayableTrack): Boolean {
+        // Jellyfin songs: the heart is a Jellyfin favourite.
+        if (track.internalTrackId?.startsWith("jf:") == true) return jellyFavourites.toggle(track)
         val localUrl = deviceLocalUrl(track)
         if (localUrl != null) {
             return localOfflineRepository.toggleLike(localUrl)
@@ -66,6 +71,7 @@ class TrackLikeController @Inject constructor(
 
     /** Idempotent local like for artwork double-tap: it never unlikes. */
     suspend fun like(track: PlayableTrack): Boolean {
+        if (track.internalTrackId?.startsWith("jf:") == true) return jellyFavourites.like(track)
         val localUrl = deviceLocalUrl(track)
         if (localUrl != null) {
             localOfflineRepository.setLiked(localUrl, true)

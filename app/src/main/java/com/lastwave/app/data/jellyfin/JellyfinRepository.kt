@@ -238,6 +238,8 @@ class JellyfinRepository @Inject constructor(
 
     fun localCover(id: String): String? = downloads.localCover(id)
 
+    fun replaceLocalCover(id: String, bytes: ByteArray) = downloads.replaceCover(id, bytes)
+
     suspend fun favoriteTracks(): List<PlayableTrack> {
         val s = requireSession()
         val kbps = effectiveKbps()

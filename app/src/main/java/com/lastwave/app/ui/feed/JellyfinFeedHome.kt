@@ -170,7 +170,12 @@ private fun FeedSections(feedViewModel: JellyfinFeedViewModel, libraryViewModel:
     val player = LocalMusicPlayer.current
     val scope = rememberCoroutineScope()
     val session = state.session
-    com.lastwave.app.ui.library.CollectionActionsHost(libraryViewModel, canAddToPlaylist = false)
+    val outsideVm: com.lastwave.app.ui.library.OutsideSourcesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+    val outsideRecs by outsideVm.recommendations.collectAsStateWithLifecycle()
+    androidx.compose.runtime.LaunchedEffect(state.online, state.session) {
+        if (state.online && state.session != null) outsideVm.loadRecommendations()
+    }
+    com.lastwave.app.ui.library.CollectionActionsHost(libraryViewModel, canAddToPlaylist = true)
 
     when {
         !state.sessionLoaded -> CenteredProgress()
@@ -222,7 +227,21 @@ private fun FeedSections(feedViewModel: JellyfinFeedViewModel, libraryViewModel:
                 }
             }
 
-            if (state.error != null && state.recentlyAdded.isEmpty()) {
+            val offlineMode = !state.online || (state.error != null && state.recentlyAdded.isEmpty())
+            if (offlineMode && state.offlineItems.isNotEmpty()) {
+                item(key = "offline-note") {
+                    Text(
+                        if (state.online) "Can't reach your server. Your downloads still work:"
+                        else "You're offline. Your downloads still work:",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                }
+                item(key = "offline-shelf") {
+                    AlbumShelf("Available offline", state.offlineItems, feedViewModel, session, libraryViewModel)
+                }
+            } else if (state.error != null && state.recentlyAdded.isEmpty()) {
                 item(key = "error") {
                     Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                         ErrorWithRetry(state.error!!, feedViewModel::refresh)
@@ -245,9 +264,18 @@ private fun FeedSections(feedViewModel: JellyfinFeedViewModel, libraryViewModel:
                 item(key = "random") {
                     AlbumShelf("Random picks", state.randomPicks, feedViewModel, session, libraryViewModel)
                 }
+                if (state.online) item(key = "youtube") {
+                    com.lastwave.app.ui.library.YouTubeShelf(outsideRecs, player)
+                }
             }
         }
     }
+}
+
+private fun detailOf(item: JfItem, round: Boolean): LibraryDetail = when {
+    round -> LibraryDetail.Artist(item)
+    item.type == "Playlist" -> LibraryDetail.Playlist(item)
+    else -> LibraryDetail.Album(item)
 }
 
 @Composable
@@ -281,12 +309,8 @@ private fun AlbumShelf(
                     subtitle = if (round) null else album.albumArtist,
                     coverUrl = feedViewModel.coverUrl(session, album),
                     round = round,
-                    onClick = {
-                        libraryViewModel.open(if (round) LibraryDetail.Artist(album) else LibraryDetail.Album(album))
-                    },
-                    onLongClick = {
-                        libraryViewModel.showActions(if (round) LibraryDetail.Artist(album) else LibraryDetail.Album(album))
-                    },
+                    onClick = { libraryViewModel.open(detailOf(album, round)) },
+                    onLongClick = { libraryViewModel.showActions(detailOf(album, round)) },
                     modifier = Modifier.width(150.dp),
                 )
             }

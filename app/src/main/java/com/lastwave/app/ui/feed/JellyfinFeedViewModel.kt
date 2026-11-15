@@ -27,6 +27,9 @@ data class JellyfinFeedState(
     val shelves: List<FeedShelf> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
+    val online: Boolean = true,
+    /** Downloaded albums and playlists, offered when there's no connection. */
+    val offlineItems: List<JfItem> = emptyList(),
 )
 
 /** Shelves for the Feed tab, all read from the Jellyfin server. */
@@ -34,6 +37,8 @@ data class JellyfinFeedState(
 class JellyfinFeedViewModel @Inject constructor(
     private val repository: JellyfinRepository,
     private val shelfBuilder: JellyFeedShelves,
+    private val connectivity: com.lastwave.app.data.jellyfin.JellyConnectivity,
+    private val downloads: com.lastwave.app.data.jellyfin.download.JellyDownloads,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(JellyfinFeedState())
@@ -68,6 +73,23 @@ class JellyfinFeedViewModel @Inject constructor(
     }
 
     init {
+        viewModelScope.launch {
+            connectivity.online.collect { on ->
+                _state.update { it.copy(online = on) }
+                val s = _state.value
+                if (on && s.session != null && s.recentlyAdded.isEmpty() && !s.loading) refresh()
+            }
+        }
+        viewModelScope.launch {
+            downloads.collections.collect { list ->
+                _state.update { s ->
+                    s.copy(offlineItems = list.map { JfItem(
+                        id = it.id, name = it.name, albumArtist = it.subtitle,
+                        type = if (it.type == com.lastwave.app.data.jellyfin.download.COLLECTION_PLAYLIST) "Playlist" else "MusicAlbum",
+                    ) })
+                }
+            }
+        }
         viewModelScope.launch {
             repository.session.distinctUntilChanged().collect { session ->
                 _state.update { it.copy(sessionLoaded = true, session = session) }

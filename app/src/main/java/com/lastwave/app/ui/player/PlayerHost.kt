@@ -406,10 +406,15 @@ fun PlayerHost(
         }
     }
     val context = androidx.compose.ui.platform.LocalContext.current
-    val requestAddToPlaylist = remember(viewModel) {
+    var jellyPickerTracks by remember { mutableStateOf<List<PlayableTrack>?>(null) }
+    val requestAddToPlaylist = remember<(PlayableTrack) -> Unit>(viewModel) {
         { track: PlayableTrack ->
-            viewModel.prepareCustomPlaylists()
-            playlistTrack = track
+            if (track.internalTrackId?.startsWith("jf:") == true) {
+                jellyPickerTracks = listOf(track)
+            } else {
+                viewModel.prepareCustomPlaylists()
+                playlistTrack = track
+            }
         }
     }
     val trackKey = state.current?.let { it.videoId ?: "${it.artist}|${it.title}" }
@@ -518,6 +523,7 @@ fun PlayerHost(
     CompositionLocalProvider(
         LocalMusicPlayer provides viewModel.player,
         LocalAddToPlaylist provides requestAddToPlaylist,
+        com.lastwave.app.ui.library.LocalJellyAddToPlaylist provides { tracks -> jellyPickerTracks = tracks },
         LocalMiniPlayerScrollClearance provides if (state.current != null && !settings.buttonNowPlayingEnabled && !hideMiniPlayer) 98.dp else 0.dp,
         LocalMiniPlayerSnackbarClearance provides if (miniPlayerVisible) {
             // Keep snackbars clear of the tray: its bottom lift plus its ~80dp card.
@@ -696,6 +702,7 @@ fun PlayerHost(
                 }
             }
             
+            com.lastwave.app.ui.library.JellyAddToPlaylistHost(jellyPickerTracks) { jellyPickerTracks = null }
             playlistTrack?.let { track ->
                 AddToPlaylistDialogHost(
                     viewModel = viewModel,

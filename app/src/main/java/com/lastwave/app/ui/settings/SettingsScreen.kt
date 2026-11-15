@@ -483,6 +483,7 @@ fun SettingsScreen(
         LocalToggleDetailViewer provides { activeToggleDetail = it },
     ) {
         var activeTab by remember { mutableStateOf<SettingsTab?>(null) }
+        var showOtherSources by rememberSaveable { mutableStateOf(false) }
         var isSearchBarVisible by rememberSaveable { mutableStateOf(false) }
         var highlightedSettingId by remember { mutableStateOf<String?>(null) }
         val focusManager = LocalFocusManager.current
@@ -631,60 +632,16 @@ fun SettingsScreen(
 
                         item {
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                SectionLabel("Collaboration & Social")
-                                SettingsGroup(rowCount = 1) { _, position ->
-                                    SettingsActionCard(
-                                        icon = Icons.Filled.Group,
-                                        iconContainer = MaterialTheme.colorScheme.primaryContainer,
-                                        iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        title = stringResource(R.string.settings_jam_title),
-                                        subtitle = if (jamUiState.isConnected) {
-                                            "In Session: #${jamUiState.roomCode} \u2022 ${jamUiState.participants.size} listening together"
-                                        } else {
-                                            stringResource(R.string.settings_jam_sub)
-                                        },
-                                        onClick = onOpenJam,
-                                        position = position,
-                                    )
-                                }
-                            }
-                        }
-
-                        item {
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                SectionLabel("Services & Add-ons")
-                                SettingsGroup(rowCount = 4) { index, position ->
+                                SectionLabel("Scrobbling & Spotify")
+                                SettingsGroup(rowCount = 2) { index, position ->
                                     when (index) {
                                         0 -> SettingsActionCard(
-                                            icon = Icons.Filled.Extension,
-                                            iconContainer = MaterialTheme.colorScheme.tertiaryContainer,
-                                            iconTint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                            title = stringResource(R.string.settings_modules_title),
-                                            subtitle = stringResource(R.string.settings_modules_sub),
-                                            onClick = onOpenModules,
-                                            position = position,
-                                            isHighlighted = (highlightedSettingId == "services.modules" || highlightedSettingId == "library.modules"),
-                                        )
-                                        1 -> SettingsActionCard(
                                             icon = Icons.Filled.Album,
                                             iconContainer = MaterialTheme.colorScheme.primaryContainer,
                                             iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
                                             title = stringResource(R.string.set_cat_lfm),
                                             subtitle = if (isLastFmConnected) "Connected as ${session.username} \u2022 Scrobbling active" else "Connect account, scrobbles & statistics sync",
                                             onClick = { activeTab = SettingsTab.LAST_FM },
-                                            position = position,
-                                        )
-                                        2 -> SettingsActionCard(
-                                            icon = Icons.Filled.CloudSync,
-                                            iconContainer = MaterialTheme.colorScheme.secondaryContainer,
-                                            iconTint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            title = stringResource(R.string.set_cat_yt),
-                                            subtitle = if (ytConnection.isConnected) {
-                                                "Connected as ${ytConnection.accountName} • 24/7 library sync"
-                                            } else {
-                                                "YouTube Music account, channels, history & 24/7 sync"
-                                            },
-                                            onClick = { activeTab = SettingsTab.YOUTUBE },
                                             position = position,
                                         )
                                         else -> SettingsActionCard(
@@ -772,6 +729,61 @@ fun SettingsScreen(
                                 }
                             }
                         }
+                        item {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                SettingsActionCard(
+                                    icon = Icons.Filled.Extension,
+                                    iconContainer = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    iconTint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    title = "Other sources",
+                                    subtitle = if (showOtherSources) "YouTube Music, Jam sessions and add-on modules" else "YouTube Music, Jam sessions, modules (tap to show)",
+                                    onClick = { showOtherSources = !showOtherSources },
+                                    position = GroupPosition.SINGLE,
+                                )
+                                if (showOtherSources) {
+                                    SettingsGroup(rowCount = 3) { index, position ->
+                                        when (index) {
+                                        0 -> SettingsActionCard(
+                                            icon = Icons.Filled.CloudSync,
+                                            iconContainer = MaterialTheme.colorScheme.secondaryContainer,
+                                            iconTint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            title = stringResource(R.string.set_cat_yt),
+                                            subtitle = if (ytConnection.isConnected) {
+                                                "Connected as ${ytConnection.accountName} • 24/7 library sync"
+                                            } else {
+                                                "YouTube Music account, channels, history & 24/7 sync"
+                                            },
+                                            onClick = { activeTab = SettingsTab.YOUTUBE },
+                                            position = position,
+                                        )
+                                        1 -> SettingsActionCard(
+                                            icon = Icons.Filled.Extension,
+                                            iconContainer = MaterialTheme.colorScheme.tertiaryContainer,
+                                            iconTint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                            title = stringResource(R.string.settings_modules_title),
+                                            subtitle = stringResource(R.string.settings_modules_sub),
+                                            onClick = onOpenModules,
+                                            position = position,
+                                            isHighlighted = (highlightedSettingId == "services.modules" || highlightedSettingId == "library.modules"),
+                                        )
+                                            else -> SettingsActionCard(
+                                                icon = Icons.Filled.Group,
+                                                iconContainer = MaterialTheme.colorScheme.primaryContainer,
+                                                iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                title = stringResource(R.string.settings_jam_title),
+                                                subtitle = if (jamUiState.isConnected) {
+                                                    "In Session: #${jamUiState.roomCode} \u2022 ${jamUiState.participants.size} listening together"
+                                                } else {
+                                                    stringResource(R.string.settings_jam_sub)
+                                                },
+                                                onClick = onOpenJam,
+                                                position = position,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     SettingsTab.AUDIO -> {
@@ -793,6 +805,7 @@ fun SettingsScreen(
 
                     val isIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
                     val audioRows = buildList<@Composable (GroupPosition) -> Unit> {
+                        if (JellySettingsFlags.SHOW_YOUTUBE_QUALITY_TIERS) {
                         add { position ->
                             SettingsActionCard(
                                 icon = Icons.Filled.Wifi,
@@ -834,6 +847,7 @@ fun SettingsScreen(
                                 position = position,
                                 isHighlighted = (highlightedSettingId == "audio.download_quality"),
                             )
+                        }
                         }
                         add { position ->
                             SettingsActionCard(

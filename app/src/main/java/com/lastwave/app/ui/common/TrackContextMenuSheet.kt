@@ -665,7 +665,7 @@ fun TrackContextMenuSheet(
                     val downloadKey = com.lastwave.app.data.download.TrackDownloadManager.makeDownloadKey(t.name, t.artist)
                     val isDownloading = activeDownloads[downloadKey]?.let { !it.isFinished } == true
                     // The file is already on the device; no streaming download.
-                    if (!isLocalFile) add { pos ->
+                    if (!isLocalFile && playable.internalTrackId?.startsWith("jf:") != true) add { pos ->
                         when {
                             isDownloaded -> {
                                 MenuActionRow(Icons.Filled.CheckCircle, stringResource(R.string.menu_downloaded), position = pos) {

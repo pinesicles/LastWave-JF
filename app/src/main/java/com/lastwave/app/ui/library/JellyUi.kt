@@ -110,7 +110,11 @@ internal fun JellyTrackRow(
 ) {
     val player = LocalMusicPlayer.current
     val chrome by player.chromeState.collectAsStateWithLifecycle()
-    val isPlaying = chrome.current?.internalTrackId == track.internalTrackId
+    val isPlaying = if (track.internalTrackId != null) {
+        chrome.current?.internalTrackId == track.internalTrackId
+    } else {
+        track.videoId != null && chrome.current?.videoId == track.videoId
+    }
     val haptics = LocalHapticFeedback.current
     var menu by remember { mutableStateOf(false) }
     Card(
@@ -291,13 +295,18 @@ internal fun JellySearchResults(session: JellyfinSession?, state: SearchState, v
     val player = LocalMusicPlayer.current
     val addToPlaylist = LocalJellyAddToPlaylist.current
     val mode by viewModel.mode.collectAsStateWithLifecycle()
+    // Feed only: songs from outside the library, kept in their own section.
+    val outside: OutsideSourcesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+    val outsideState by outside.state.collectAsStateWithLifecycle()
+    val addToLocalPlaylist = com.lastwave.app.ui.player.LocalAddToPlaylist.current
+    LaunchedEffect(state.query) { outside.reset() }
     val hits = state.hits
     val empty = hits.albums.isEmpty() && hits.artists.isEmpty() && hits.playlists.isEmpty() && hits.tracks.isEmpty()
     val message: String? = when {
         state.query.isBlank() ->
             if (mode == LibraryMode.SAVED) "Search your saved albums, artists, playlists and liked songs" else "Search your Jellyfin server"
         state.error != null || (state.loading && empty) -> null
-        empty -> "Nothing found"
+        empty && mode == LibraryMode.SAVED -> "Nothing found"
         else -> null
     }
     when {
@@ -333,6 +342,16 @@ internal fun JellySearchResults(session: JellyfinSession?, state: SearchState, v
             if (hits.playlists.isNotEmpty()) {
                 item(key = "h_playlists") { SearchLabel("Playlists") }
                 item(key = "playlists") { Shelf(session, hits.playlists, false, viewModel) { viewModel.open(LibraryDetail.Playlist(it)) } }
+            }
+            if (mode != LibraryMode.SAVED) {
+                if (empty) item(key = "none_here") {
+                    Text(
+                        "Nothing on your server for “${state.query}”",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                    )
+                }
+                outsideSearchItems(state.query, outsideState, outside, player, addToLocalPlaylist)
             }
         }
     }

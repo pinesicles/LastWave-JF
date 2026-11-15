@@ -60,7 +60,10 @@ class GenreExplorerNavBridge @Inject constructor(genreExplorer: GenreExplorer) :
 class MixLauncherNavBridge @Inject constructor(val mixLauncher: com.lastwave.app.ui.generate.MixLauncher) : ViewModel()
 
 @HiltViewModel
-class ArtistAlbumNavBridge @Inject constructor(val navigator: ArtistAlbumNavigator) : ViewModel()
+class ArtistAlbumNavBridge @Inject constructor(
+    val navigator: ArtistAlbumNavigator,
+    val jellyNavigator: com.lastwave.app.ui.library.JellyNavigator,
+) : ViewModel()
 
 @HiltViewModel
 class AppRouteNavBridge @Inject constructor(val routeNavigator: AppRouteNavigator) : ViewModel()
@@ -201,6 +204,15 @@ fun LastWaveNavHost(
             // destination node, leaving taps on similar artists / more-by
             // albums visibly dead and the detail ViewModel showing stale data.
             // Rapid double-tap dedup already lives in ArtistAlbumNavigator.
+            // Jellyfin library first: if the artist/album is there, open it in the Library tab.
+            val inJelly = when (target) {
+                is ArtistAlbumNavTarget.Artist -> navBridge.jellyNavigator.tryArtist(target.name)
+                is ArtistAlbumNavTarget.Album -> navBridge.jellyNavigator.tryAlbum(target.title, target.artist)
+            }
+            if (inJelly) {
+                navController.popBackStack(Screen.MainShell.route, false)
+                return@collect
+            }
             when (target) {
                 is ArtistAlbumNavTarget.Artist -> {
                     navController.navigate(Screen.ArtistDetail.createRoute(target.name, target.browseId))

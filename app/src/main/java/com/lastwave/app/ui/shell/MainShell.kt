@@ -300,6 +300,17 @@ fun MainShell(
             savedLibrary.selectTab(com.lastwave.app.ui.library.LibraryTab.DOWNLOADED)
             scope.launch { pagerState.animateScrollToPage(tabs.indexOf(MainTab.PLAYLISTS)) }
         }
+        // "Go to artist/album" from Now Playing or a menu: open it in the Library tab.
+        val jellyNavigator = hiltViewModel<com.lastwave.app.ui.shell.JellyNavHolder>().navigator
+        val pendingDetail by jellyNavigator.pending.collectAsStateWithLifecycle()
+        LaunchedEffect(pendingDetail) {
+            val detail = pendingDetail ?: return@LaunchedEffect
+            savedLibrary.start(com.lastwave.app.ui.library.LibraryMode.SAVED)
+            savedLibrary.selectTab(com.lastwave.app.ui.library.LibraryTab.PLAYLISTS)
+            savedLibrary.open(detail)
+            jellyNavigator.consume()
+            pagerState.animateScrollToPage(tabs.indexOf(MainTab.PLAYLISTS))
+        }
         HorizontalPager(
             state = pagerState,
             // Keep every tab composed. With 1, jumping Playlists -> Home

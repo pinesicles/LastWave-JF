@@ -1294,7 +1294,7 @@ private fun TrackList(
 // ---- playlist dialogs ---------------------------------------------------------------------------
 
 @Composable
-private fun NameDialog(
+internal fun NameDialog(
     title: String,
     initial: String,
     confirmLabel: String,
@@ -1321,7 +1321,7 @@ private fun NameDialog(
 }
 
 @Composable
-private fun PlaylistPickerDialog(
+internal fun PlaylistPickerDialog(
     viewModel: LibraryViewModel,
     onPick: (JfItem) -> Unit,
     onNew: () -> Unit,
