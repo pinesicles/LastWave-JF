@@ -2,7 +2,6 @@ package com.lastwave.app.ui.feed
 
 import androidx.activity.compose.BackHandler
 import com.lastwave.app.playback.toPlayableTrack
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -41,7 +40,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -64,7 +62,6 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -118,7 +115,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
@@ -624,6 +620,7 @@ fun FeedScreen(
                         key == "new_releases" -> showSynthetic && combinedNewReleases.isNotEmpty()
                         key == "friends_activity" || key == "friends" -> state.feedData.friends.isNotEmpty()
                         key == "podcast_shelf" || key == "podcasts" -> showSynthetic && podcastsEnabled && state.feedData.podcastShows.isNotEmpty()
+                        key == "moods_and_genres" -> true
                         key.startsWith("yt:") -> resolveNativeShelf(key) != null
                         else -> false
                     }
@@ -746,13 +743,9 @@ fun FeedScreen(
                         // A generic Shape here promoted the whole scrolling viewport to an
                         // offscreen layer: frames re-recorded and re-uploaded its sections
                         // instead of drawing straight to the window. Mask the rounded top
-                        // corners at draw time instead, and only when the list actually
-                        // scrolls under glass.
+                        // corners at draw time instead, with or without glass (top = 0
+                        // when the list starts below the header).
                         .drawWithContent {
-                            if (!useFeedGlass) {
-                                drawContent()
-                                return@drawWithContent
-                            }
                             drawContent()
                             val left = feedCornerInsetPx
                             val right = size.width - feedCornerInsetPx
@@ -764,7 +757,6 @@ fun FeedScreen(
                             if (radius <= 0f) return@drawWithContent
                             val mask = feedBackgroundColor
                             drawRect(mask, Offset.Zero, Size(left, top + radius))
-                            drawRect(mask, Offset(right, 0f), Size(size.width - right, top + radius))
                             // No band above `top`: the content there is what the glass
                             // header refracts. Masking it left the glass a flat bar.
                             val topLeft = Path().apply {
@@ -779,15 +771,21 @@ fun FeedScreen(
                                 close()
                             }
                             drawPath(topLeft, mask)
+                            // Right gutter and corner as ONE path. As a rect plus a
+                            // corner path they met along x = right, and the two
+                            // antialiased edges left a hairline of feed showing through.
                             val topRight = Path().apply {
-                                moveTo(right, top)
+                                moveTo(right, 0f)
+                                lineTo(size.width, 0f)
+                                lineTo(size.width, top + radius)
                                 lineTo(right, top + radius)
                                 arcTo(
                                     Rect(right - 2f * radius, top, right, top + 2f * radius),
-                                    270f,
-                                    90f,
+                                    0f,
+                                    -90f,
                                     false,
                                 )
+                                lineTo(right, top)
                                 close()
                             }
                             drawPath(topRight, mask)
@@ -937,8 +935,6 @@ fun FeedScreen(
                                             FeedSectionHeader(
                                                 title = stringResource(R.string.feed_discover),
                                                 subtitle = stringResource(R.string.feed_discover_sub),
-                                                actionText = stringResource(R.string.feed_see_all),
-                                                actionIcon = Icons.AutoMirrored.Filled.ArrowForwardIos,
                                                 onActionClick = onOpenDiscover,
                                                 onLongClick = { sectionMenuTarget = "discover_new_music" to "Discover New Music" },
                                             )
@@ -1329,8 +1325,6 @@ fun FeedScreen(
                                             FeedSectionHeader(
                                                 title = stringResource(R.string.feed_releases),
                                                 subtitle = stringResource(R.string.feed_releases_sub),
-                                                actionText = stringResource(R.string.feed_see_all),
-                                                actionIcon = Icons.AutoMirrored.Filled.ArrowForwardIos,
                                                 onActionClick = onOpenNewReleases,
                                                 onLongClick = { sectionMenuTarget = "new_releases" to "New Releases" },
                                             )
@@ -1369,8 +1363,6 @@ fun FeedScreen(
                                             FeedSectionHeader(
                                                 title = stringResource(R.string.feed_friends),
                                                 subtitle = stringResource(R.string.feed_friends_sub),
-                                                actionText = stringResource(R.string.feed_see_all),
-                                                actionIcon = Icons.AutoMirrored.Filled.ArrowForwardIos,
                                                 onActionClick = onOpenFriends,
                                                 onLongClick = { sectionMenuTarget = "friends_activity" to "Friends Activity" },
                                             )
@@ -1404,8 +1396,6 @@ fun FeedScreen(
                                                 title = state.feedData.podcastShelfTitle
                                                     ?.takeIf { it.isNotBlank() }
                                                     ?: stringResource(R.string.podcasts_title),
-                                                actionText = stringResource(R.string.podcasts_see_all),
-                                                actionIcon = Icons.AutoMirrored.Filled.ArrowForwardIos,
                                                 onActionClick = {
                                                     val chip = state.homeChips.firstOrNull { it.title.equals("Podcasts", ignoreCase = true) }
                                                         ?: HomeChip(title = "Podcasts", params = "ggMPOg1mZWVkX3BvZGNhc3Rz")
@@ -1437,6 +1427,16 @@ fun FeedScreen(
                                         }
                                     }
                                 }
+                                sectionKey == "moods_and_genres" -> {
+                                    item(key = "moods_and_genres", contentType = "moods_and_genres") {
+                                        HomeContainerSection(shape = getContainerShape("moods_and_genres")) {
+                                            val moodsTitle = stringResource(R.string.moods_title)
+                                            com.lastwave.app.ui.moods.HomeMoodsSection(
+                                                onLongClick = { sectionMenuTarget = "moods_and_genres" to moodsTitle },
+                                            )
+                                        }
+                                    }
+                                }
                                 sectionKey.startsWith("yt:") -> {
                                     val shelf = ytShelfBySectionKey[sectionKey]
                                     if (shelf != null && shelf.items.isNotEmpty()) {
@@ -1462,21 +1462,6 @@ fun FeedScreen(
                                             }
                                         }
                                     }
-                                }
-                            }
-                            if (sectionKey == orderedFeedSections.firstOrNull { it == "podcast_shelf" || it == "podcasts" }) {
-                                item(key = "moods_and_genres", contentType = "moods_and_genres") {
-                                    HomeContainerSection {
-                                        com.lastwave.app.ui.moods.HomeMoodsSection()
-                                    }
-                                }
-                            }
-                        }
-
-                        if (orderedFeedSections.none { it == "podcast_shelf" || it == "podcasts" }) {
-                            item(key = "moods_and_genres", contentType = "moods_and_genres") {
-                                HomeContainerSection {
-                                    com.lastwave.app.ui.moods.HomeMoodsSection()
                                 }
                             }
                         }
@@ -1589,8 +1574,8 @@ fun FeedScreen(
                 containerColor = if (isPodcastsActive) Color.Transparent else Color.Unspecified,
                 backdrop = if (useFeedGlass) feedBackdrop else null,
                 actions = {
-                    HeaderActionIcon(Icons.Filled.Download, "Downloads", onOpenDownloads)
                     HeaderActionIcon(Icons.Filled.Search, "Search", onOpenSearch)
+                    com.lastwave.app.ui.recognition.MusicRecognitionButton(key = "recognition_feed")
                     IconButton(onClick = onOpenSettings) {
                         com.lastwave.app.ui.home.ProfileAvatar(avatarUrl = state.avatarUrl, modifier = Modifier.size(38.dp))
                     }

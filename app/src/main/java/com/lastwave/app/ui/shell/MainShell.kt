@@ -92,6 +92,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.boundsInParent
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
@@ -275,6 +276,101 @@ fun MainShell(
     }
     val updateInfo by mainShellViewModel.updateInfo.collectAsStateWithLifecycle()
     val showUpdateBanner = updateInfo.isUpdateAvailable && !updateInfo.isDismissed
+    val ytConnection by mainShellViewModel.ytConnection.collectAsStateWithLifecycle()
+    val settings by mainShellViewModel.settings.collectAsStateWithLifecycle(initialValue = null)
+    var promptDismissedThisSession by rememberSaveable { mutableStateOf(false) }
+    var joinSupportDismissedThisSession by rememberSaveable { mutableStateOf(false) }
+
+    val currentSettings = settings
+    val shouldShowJoinSupport = currentSettings != null &&
+        !currentSettings.hasDismissedJoinSupportPrompt &&
+        !joinSupportDismissedThisSession
+
+    if (shouldShowJoinSupport) {
+        JoinSupportDialog(
+            onDismiss = {
+                mainShellViewModel.setDismissedJoinSupportPrompt(true)
+                joinSupportDismissedThisSession = true
+            },
+        )
+    }
+
+    val shouldShowLoginPrompt = currentSettings != null &&
+        !shouldShowJoinSupport &&
+        !ytConnection.isConnected &&
+        !currentSettings.suppressYouTubeLoginPrompt &&
+        !promptDismissedThisSession
+
+    if (shouldShowLoginPrompt) {
+        var dontShowAgain by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = {
+                if (dontShowAgain) mainShellViewModel.setSuppressYouTubeLoginPrompt(true)
+                promptDismissedThisSession = true
+            },
+            shape = RoundedCornerShape(28.dp),
+            containerColor = if (LocalLiquidGlass.current) {
+                MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
+            title = {
+                Text(
+                    text = "Get better recommendations",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text(
+                        text = "Log in to YouTube Music, or create a free account, to get personalized songs and queues.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { dontShowAgain = !dontShowAgain }
+                            .padding(vertical = 4.dp),
+                    ) {
+                        Checkbox(
+                            checked = dontShowAgain,
+                            onCheckedChange = { dontShowAgain = it },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "Don't show again",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (dontShowAgain) mainShellViewModel.setSuppressYouTubeLoginPrompt(true)
+                        promptDismissedThisSession = true
+                        onOpenYouTubeLogin()
+                    },
+                    shape = RoundedCornerShape(20.dp),
+                ) {
+                    Text("Take me to YT Music login")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        if (dontShowAgain) mainShellViewModel.setSuppressYouTubeLoginPrompt(true)
+                        promptDismissedThisSession = true
+                    },
+                ) {
+                    Text("OK, thanks")
+                }
+            },
+        )
+    }
 
     val backgroundColor = MaterialTheme.colorScheme.background
     val hideNavTabs = com.lastwave.app.ui.theme.LocalHideNavTabs.current
@@ -293,24 +389,6 @@ fun MainShell(
 
     Box(Modifier.fillMaxSize()) {
         val feedIndex = tabs.indexOf(MainTab.FEED)
-        // The header Downloads icon opens the Downloaded tab of the Library instead of the YouTube downloads screen.
-        val savedLibrary: com.lastwave.app.ui.library.LibraryViewModel = hiltViewModel(key = "library-SAVED")
-        val openJellyDownloads: () -> Unit = {
-            savedLibrary.start(com.lastwave.app.ui.library.LibraryMode.SAVED)
-            savedLibrary.selectTab(com.lastwave.app.ui.library.LibraryTab.DOWNLOADED)
-            scope.launch { pagerState.animateScrollToPage(tabs.indexOf(MainTab.PLAYLISTS)) }
-        }
-        // "Go to artist/album" from Now Playing or a menu: open it in the Library tab.
-        val jellyNavigator = hiltViewModel<com.lastwave.app.ui.shell.JellyNavHolder>().navigator
-        val pendingDetail by jellyNavigator.pending.collectAsStateWithLifecycle()
-        LaunchedEffect(pendingDetail) {
-            val detail = pendingDetail ?: return@LaunchedEffect
-            savedLibrary.start(com.lastwave.app.ui.library.LibraryMode.SAVED)
-            savedLibrary.selectTab(com.lastwave.app.ui.library.LibraryTab.PLAYLISTS)
-            savedLibrary.open(detail)
-            jellyNavigator.consume()
-            pagerState.animateScrollToPage(tabs.indexOf(MainTab.PLAYLISTS))
-        }
         HorizontalPager(
             state = pagerState,
             // Keep every tab composed. With 1, jumping Playlists -> Home
@@ -339,10 +417,21 @@ fun MainShell(
                     onBack = { scope.launch { pagerState.animateScrollToPage(feedIndex) } },
                 ) {
                     when (tabs[page]) {
-                        MainTab.FEED -> com.lastwave.app.ui.feed.JellyfinFeedHome(
-                            active = isCurrent,
+                        MainTab.FEED -> FeedScreen(
                             onOpenSettings = onOpenSettings,
-                            onOpenDownloads = openJellyDownloads,
+                            onOpenSearch = onOpenSearch,
+                            onOpenDiscover = onOpenDiscover,
+                            onOpenPlaylist = onOpenPlaylist,
+                            onOpenFeedPlaylist = onOpenFeedPlaylist,
+                            onOpenGenerator = onOpenGenerator,
+                            onOpenFriends = onOpenFriends,
+                            onOpenFriendProfile = onOpenFriendProfile,
+                            onOpenNewReleases = onOpenNewReleases,
+                            onOpenDownloads = onOpenDownloads,
+                            onOpenPodcasts = onOpenPodcasts,
+                            onOpenPodcastShow = onOpenPodcastShow,
+                            onOpenYouTubeLogin = onOpenYouTubeLogin,
+                            feedTapEvents = feedTapEvents,
                         )
                         MainTab.STATS -> HomeScreen(
                             onOpenSettings = onOpenSettings,
@@ -352,13 +441,10 @@ fun MainShell(
                             onOpenFriends = onOpenFriends,
                             onOpenDownloads = onOpenDownloads,
                         )
-                        MainTab.PLAYLISTS -> com.lastwave.app.ui.library.LibraryScreen(
-                            active = isCurrent,
+                        MainTab.PLAYLISTS -> PlaylistScreen(
                             onOpenPlaylist = onOpenPlaylist,
                             onOpenFeedPlaylist = onOpenFeedPlaylist,
                             onOpenGenerator = onOpenGenerator,
-                            onOpenSettings = onOpenSettings,
-                            onOpenDownloads = openJellyDownloads,
                         )
                     }
                 }

@@ -2,6 +2,7 @@
 
 package com.lastwave.app.ui.player
 
+import com.lastwave.app.data.local.SeekbarStyle
 import androidx.compose.material.icons.outlined.AddCircleOutline
 import androidx.compose.material.icons.filled.CheckCircle
 import com.lastwave.app.data.playlist.isLikedIn
@@ -125,7 +126,6 @@ import coil.compose.AsyncImage
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Remove
@@ -211,6 +211,9 @@ import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.BlendMode
@@ -343,7 +346,8 @@ internal fun FullPlayerLandscape(
     state: MusicPlayerState,
     player: MusicPlayer,
     progressState: StateFlow<PlaybackProgressState>?,
-    wavySeekbarEnabled: Boolean,
+    seekbarStyle: SeekbarStyle = SeekbarStyle.DEFAULT,
+    wavySeekbarEnabled: Boolean = (seekbarStyle == SeekbarStyle.WAVY),
     showSleeveCanvas: Boolean,
     canvas: com.lastwave.app.data.canvas.CanvasArtwork?,
     ambientColor: Color,
@@ -366,9 +370,214 @@ internal fun FullPlayerLandscape(
     onCloseVideo: () -> Unit = {},
     onEnterFullscreen: () -> Unit = {},
     onToggleVideo: (() -> Unit)? = null,
+    resolvedArtworkUrl: String? = null,
+) {
+    val windowActive = rememberPlayerWindowActive()
+
+    Row(
+        modifier = Modifier.fillMaxSize(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LandscapeArtworkPane(
+            track = track,
+            state = state,
+            player = player,
+            canvas = if (showSleeveCanvas) canvas else null,
+            resolvedArtworkUrl = resolvedArtworkUrl,
+            onDoubleTapLike = onDoubleTapLike,
+            shownDismissY = shownDismissY,
+            swipeThreshold = swipeThreshold,
+            isVideoActive = isVideoActive,
+            onCloseVideo = onCloseVideo,
+            onEnterFullscreen = onEnterFullscreen,
+            modifier = Modifier.weight(1f),
+        )
+
+        // Right Column: Controls & Metadata
+        Column(
+            modifier = Modifier
+                .weight(1.15f)
+                .fillMaxHeight()
+                .padding(start = 12.dp, end = 32.dp, top = 12.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        track.title,
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            letterSpacing = (-0.35).sp,
+                            fontWeight = FontWeight.ExtraBold,
+                        ),
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .playingMarquee(state.isPlaying && windowActive),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    val splitArtists = remember(track.artist) {
+                        com.lastwave.app.util.ArtistHelper.splitArtists(track.artist)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .playingMarquee(state.isPlaying && windowActive),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        splitArtists.forEachIndexed { index, artName ->
+                            Text(
+                                text = artName,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Medium,
+                                ),
+                                color = Color.White.copy(alpha = 0.72f),
+                                maxLines = 1,
+                                modifier = Modifier
+                                    .clickable(
+                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                        indication = null,
+                                        onClick = hapticClick { onOpenArtist(artName) },
+                                    ),
+                            )
+                            if (index < splitArtists.lastIndex) {
+                                Text(
+                                    text = ", ",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.Normal,
+                                    ),
+                                    color = Color.White.copy(alpha = 0.50f),
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.width(16.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PlayerLikeButton(
+                        liked = isLiked,
+                        onClick = hapticClick(if (isLiked) HapticFeedbackType.ToggleOff else HapticFeedbackType.Confirm, onToggleLiked),
+                        size = 50.dp,
+                    )
+                    val lyricsInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                    val isLyricsPressed by lyricsInteraction.collectIsPressedAsState()
+                    val lyricsScale by animateFloatAsState(
+                        targetValue = if (isLyricsPressed) 0.82f else 1.0f,
+                        animationSpec = ExpressiveMotion.spatialSpring(),
+                        label = "landscapeLyricsScale",
+                    )
+                    LiquidGlassSurface(
+                        glassModifier = Modifier.liquidGlassChrome(CircleShape, LocalLiquidGlass.current, LiquidGlassPreset.PlayerControls, interactionSource = lyricsInteraction),
+                        onClick = hapticClick { onTabChange(FullPlayerTab.LYRICS) },
+                        interactionSource = lyricsInteraction,
+                        shape = CircleShape,
+                        color = liquidGlassContainerColor(Color.White.copy(alpha = 0.14f)),
+                        contentColor = Color.White.copy(alpha = 0.90f),
+                        tonalElevation = 0.dp,
+                        shadowElevation = 0.dp,
+                        modifier = Modifier
+                            .size(50.dp)
+                            .graphicsLayer {
+                                scaleX = lyricsScale
+                                scaleY = lyricsScale
+                            },
+                    ) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.FormatQuote,
+                                contentDescription = "Show lyrics",
+                                modifier = Modifier.size(26.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            SeekBar(
+                progressState = progressState ?: player.progressState,
+                isPlaying = state.isPlaying,
+                trackKey = track.videoId ?: "${track.artist}|${track.title}",
+                seekbarStyle = seekbarStyle,
+                wavyEnabled = wavySeekbarEnabled,
+                onSeek = player::seekTo,
+                isTranslucent = LocalLiquidGlass.current,
+                fallbackDurationMs = track.durationMs ?: state.durationMs,
+                primaryColor = ambientColor,
+                secondaryColor = ambientCompanion,
+                tertiaryColor = ambientDeep,
+                telemetry = state.deckBlendTelemetry,
+            )
+
+            Spacer(Modifier.height(0.dp))
+
+            val signalPath by player.signalPath.collectAsStateWithLifecycle()
+            AppleMusicQualityBadge(
+                state = state,
+                signalPath = signalPath,
+                isTranslucent = LocalLiquidGlass.current,
+                onClick = onOpenSignalPath,
+                modifier = Modifier.offset(y = (-2).dp),
+            )
+            Spacer(Modifier.height(14.dp))
+
+            MainControls(state, player, isTranslucent = LocalLiquidGlass.current)
+
+            Spacer(Modifier.height(30.dp))
+
+            PlayerUtilityControls(
+                state = state,
+                player = player,
+                isTranslucent = LocalLiquidGlass.current,
+                onOpenAudioControls = onOpenAudioControls,
+                isVideoActive = isVideoActive,
+                musicVideoEnabled = musicVideoEnabled,
+                onToggleVideo = onToggleVideo,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Landscape's left half: the cover, Canvas or music video full-bleed, cropped
+ * from the top so the upper part of the art always shows, its right edge
+ * fading out into the player background so both halves read as one surface.
+ * The same pane in Now Playing and in the lyrics split, so the art never
+ * moves.
+ */
+@Composable
+internal fun LandscapeArtworkPane(
+    track: PlayableTrack,
+    state: MusicPlayerState,
+    player: MusicPlayer,
+    canvas: com.lastwave.app.data.canvas.CanvasArtwork?,
+    resolvedArtworkUrl: String?,
+    onDoubleTapLike: () -> Unit,
+    shownDismissY: Float,
+    swipeThreshold: Float,
+    isVideoActive: Boolean,
+    onCloseVideo: () -> Unit,
+    onEnterFullscreen: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val haptics = LocalHapticFeedback.current
-    val windowActive = rememberPlayerWindowActive()
     var isArtworkDragging by remember { mutableStateOf(false) }
     var artworkDragX by remember { mutableFloatStateOf(0f) }
     val shownArtworkX by animateFloatAsState(
@@ -383,70 +592,30 @@ internal fun FullPlayerLandscape(
     var lastLikeTapTimestamp by remember { mutableLongStateOf(0L) }
     var seekResetJob by remember { mutableStateOf<Job?>(null) }
     val coroutineScope = rememberCoroutineScope()
-    var canvasAspect by remember { mutableFloatStateOf(1f) }
 
-    Row(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 32.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(40.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // Left Column: Large Album Artwork & Canvas with gestures
-        BoxWithConstraints(
+    Box(modifier.fillMaxHeight().clipToBounds()) {
+        Box(
             modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight(),
-            contentAlignment = Alignment.Center,
-        ) {
-            val artworkSize = (minOf(maxWidth, maxHeight) - 16.dp)
-                .coerceAtLeast(0.dp)
-                .coerceAtMost(480.dp)
-
-            val glowAlpha by animateFloatAsState(
-                targetValue = if (state.isPlaying) 0.65f else 0.35f,
-                animationSpec = tween(600),
-                label = "landscapeArtworkGlowAlpha",
-            )
-            Box(
-                modifier = Modifier
-                    .size(artworkSize + 36.dp)
-                    .graphicsLayer {
-                        translationX = shownArtworkX * 0.7f
-                        alpha = glowAlpha
-                    }
-                    .background(
-                        Brush.radialGradient(
-                            0.0f to ambientColor.copy(alpha = 0.50f),
-                            0.50f to ambientCompanion.copy(alpha = 0.22f),
-                            1.0f to Color.Transparent,
-                        ),
-                        shape = CircleShape,
-                    ),
-            )
-
-            val artworkPlayingScale by animateFloatAsState(
-                targetValue = if (state.isPlaying) 1.0f else 0.92f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessMediumLow,
-                ),
-                label = "landscapeArtworkPlayingScale",
-            )
-
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.88f),
-                tonalElevation = 6.dp,
-                shadowElevation = if (state.isPlaying) 28.dp else 12.dp,
-                modifier = Modifier
-                    .size(artworkSize)
-                    .graphicsLayer {
-                        scaleX = artworkPlayingScale
-                        scaleY = artworkPlayingScale
-                        translationX = shownArtworkX
-                        rotationZ = shownArtworkX / 80f
-                    }
+                .fillMaxSize()
+                .graphicsLayer {
+                    // A hint of the swipe under the finger; the art itself stays put.
+                    translationX = shownArtworkX * 0.35f
+                    compositingStrategy = CompositingStrategy.Offscreen
+                }
+                .drawWithContent {
+                    drawContent()
+                    // Fade to transparent rather than to a colour: the real
+                    // player background shows through, so the blend is exact.
+                    drawRect(
+                        Brush.horizontalGradient(0.58f to Color.Black, 1f to Color.Transparent),
+                        blendMode = BlendMode.DstIn,
+                    )
+                    // Same for the top and bottom, so the pane has no hard edges or corners.
+                    drawRect(
+                        Brush.verticalGradient(0f to Color.Transparent, 0.12f to Color.Black, 0.88f to Color.Black, 1f to Color.Transparent),
+                        blendMode = BlendMode.DstIn,
+                    )
+                }
                     .pointerInput(track.videoId, track.title, isVideoActive) {
                         if (isVideoActive) return@pointerInput
                         awaitEachGesture {
@@ -545,27 +714,40 @@ internal fun FullPlayerLandscape(
                             }
                         }
                     },
-            ) {
-                if (isVideoActive) {
-                    SyncedCoverVideoPlayer(
-                        track = track,
-                        musicPlayer = player,
-                        onCloseVideo = onCloseVideo,
-                        onEnterFullscreen = onEnterFullscreen,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } else {
-                    PlayerArtwork(
-                        track = track,
-                        modifier = Modifier.fillMaxSize(),
-                        corner = 24.dp,
-                        canvas = if (showSleeveCanvas) canvas else null,
+        ) {
+            if (isVideoActive) {
+                SyncedCoverVideoPlayer(
+                    track = track,
+                    musicPlayer = player,
+                    onCloseVideo = onCloseVideo,
+                    onEnterFullscreen = onEnterFullscreen,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                // Static cover first, Canvas on top, handing over as the video fades in.
+                var canvasCover by remember(canvas?.url) { mutableFloatStateOf(0f) }
+                StaticArtworkHero(
+                    name = track.title,
+                    artist = track.artist,
+                    embeddedUrl = track.artworkUrl,
+                    resolvedUrl = resolvedArtworkUrl,
+                    bottomFade = 0f,
+                    alpha = if (canvasCover >= 0.95f) 0f else (1f - canvasCover).coerceIn(0f, 1f),
+                    modifier = Modifier.fillMaxSize(),
+                )
+                if (canvas != null) {
+                    CanvasArtworkPlayer(
+                        canvas = canvas,
                         isPlaying = state.isPlaying,
+                        contentMode = CanvasContentMode.CROP,
+                        alignPortraitTop = true,
                         pausedForTransition = shownDismissY > 1f,
-                        onAspectRatioChanged = { canvasAspect = it },
+                        onCoverChanged = { canvasCover = it },
+                        modifier = Modifier.fillMaxSize(),
                     )
                 }
             }
+        }
 
             androidx.compose.animation.AnimatedVisibility(
                 visible = seekOverlayDirection == SeekDirection.REWIND,
@@ -656,202 +838,5 @@ internal fun FullPlayerLandscape(
                     }
                 }
             }
-        }
-
-        // Right Column: Controls & Metadata
-        Column(
-            modifier = Modifier
-                .weight(1.15f)
-                .fillMaxHeight(),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        track.title,
-                        style = MaterialTheme.typography.headlineMedium.copy(
-                            letterSpacing = (-0.35).sp,
-                            fontWeight = FontWeight.ExtraBold,
-                        ),
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .playingMarquee(state.isPlaying && windowActive),
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    val splitArtists = remember(track.artist) {
-                        com.lastwave.app.util.ArtistHelper.splitArtists(track.artist)
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .playingMarquee(state.isPlaying && windowActive),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        splitArtists.forEachIndexed { index, artName ->
-                            Text(
-                                text = artName,
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontSize = 17.sp,
-                                    fontWeight = FontWeight.Medium,
-                                ),
-                                color = Color.White.copy(alpha = 0.72f),
-                                maxLines = 1,
-                                modifier = Modifier
-                                    .clickable(
-                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                        indication = null,
-                                        onClick = hapticClick { onOpenArtist(artName) },
-                                    ),
-                            )
-                            if (index < splitArtists.lastIndex) {
-                                Text(
-                                    text = ", ",
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        fontSize = 17.sp,
-                                        fontWeight = FontWeight.Normal,
-                                    ),
-                                    color = Color.White.copy(alpha = 0.50f),
-                                    maxLines = 1,
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(Modifier.width(16.dp))
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val likeInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-                    val isLikePressed by likeInteraction.collectIsPressedAsState()
-                    val likeScale by animateFloatAsState(
-                        targetValue = if (isLikePressed) 0.78f else 1.0f,
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                            stiffness = Spring.StiffnessMediumLow,
-                        ),
-                        label = "landscapeLikeScale",
-                    )
-                    LiquidGlassSurface(
-                        glassModifier = Modifier.liquidGlassChrome(CircleShape, LocalLiquidGlass.current, LiquidGlassPreset.PlayerControls, interactionSource = likeInteraction),
-                        onClick = hapticClick(if (isLiked) HapticFeedbackType.ToggleOff else HapticFeedbackType.Confirm, onToggleLiked),
-                        interactionSource = likeInteraction,
-                        shape = CircleShape,
-                        color = liquidGlassContainerColor(if (isLiked) {
-                            Color.White.copy(alpha = 0.92f)
-                        } else {
-                            Color.White.copy(alpha = 0.14f)
-                        }),
-                        contentColor = if (isLiked) {
-                            Color(0xFFE91E63)
-                        } else {
-                            Color.White.copy(alpha = 0.85f)
-                        },
-                        tonalElevation = 0.dp,
-                        shadowElevation = 0.dp,
-                        modifier = Modifier
-                            .size(50.dp)
-                            .graphicsLayer {
-                                scaleX = likeScale
-                                scaleY = likeScale
-                            },
-                    ) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Icon(
-                                if (isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                                contentDescription = if (isLiked) "Unlike song" else "Like song",
-                                modifier = Modifier.size(26.dp),
-                            )
-                        }
-                    }
-
-                    val lyricsInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-                    val isLyricsPressed by lyricsInteraction.collectIsPressedAsState()
-                    val lyricsScale by animateFloatAsState(
-                        targetValue = if (isLyricsPressed) 0.82f else 1.0f,
-                        animationSpec = ExpressiveMotion.spatialSpring(),
-                        label = "landscapeLyricsScale",
-                    )
-                    LiquidGlassSurface(
-                        glassModifier = Modifier.liquidGlassChrome(CircleShape, LocalLiquidGlass.current, LiquidGlassPreset.PlayerControls, interactionSource = lyricsInteraction),
-                        onClick = hapticClick { onTabChange(FullPlayerTab.LYRICS) },
-                        interactionSource = lyricsInteraction,
-                        shape = CircleShape,
-                        color = liquidGlassContainerColor(Color.White.copy(alpha = 0.14f)),
-                        contentColor = Color.White.copy(alpha = 0.90f),
-                        tonalElevation = 0.dp,
-                        shadowElevation = 0.dp,
-                        modifier = Modifier
-                            .size(50.dp)
-                            .graphicsLayer {
-                                scaleX = lyricsScale
-                                scaleY = lyricsScale
-                            },
-                    ) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Filled.FormatQuote,
-                                contentDescription = "Show lyrics",
-                                modifier = Modifier.size(26.dp),
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(20.dp))
-
-            SeekBar(
-                progressState = progressState ?: player.progressState,
-                isPlaying = state.isPlaying,
-                trackKey = track.videoId ?: "${track.artist}|${track.title}",
-                wavyEnabled = wavySeekbarEnabled,
-                onSeek = player::seekTo,
-                isTranslucent = LocalLiquidGlass.current,
-                fallbackDurationMs = track.durationMs ?: state.durationMs,
-                primaryColor = ambientColor,
-                secondaryColor = ambientCompanion,
-                tertiaryColor = ambientDeep,
-                telemetry = state.deckBlendTelemetry,
-            )
-
-            Spacer(Modifier.height(0.dp))
-
-            val signalPath by player.signalPath.collectAsStateWithLifecycle()
-            AppleMusicQualityBadge(
-                state = state,
-                signalPath = signalPath,
-                isTranslucent = LocalLiquidGlass.current,
-                onClick = onOpenSignalPath,
-                modifier = Modifier.offset(y = (-2).dp),
-            )
-            Spacer(Modifier.height(14.dp))
-
-            MainControls(state, player, isTranslucent = LocalLiquidGlass.current)
-
-            Spacer(Modifier.height(30.dp))
-
-            PlayerUtilityControls(
-                state = state,
-                player = player,
-                isTranslucent = LocalLiquidGlass.current,
-                onOpenAudioControls = onOpenAudioControls,
-                isVideoActive = isVideoActive,
-                musicVideoEnabled = musicVideoEnabled,
-                onToggleVideo = onToggleVideo,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
     }
 }

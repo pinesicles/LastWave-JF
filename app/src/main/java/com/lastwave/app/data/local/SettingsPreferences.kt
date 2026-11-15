@@ -100,15 +100,32 @@ enum class RecommendationSource(val id: String, val titleRes: Int, val subtitleR
     }
 }
 
+/** Visual style for the player seekbar progress slider. */
+enum class SeekbarStyle(val id: String) {
+    DEFAULT("default"),
+    WAVY("wavy"),
+    WAVEFORM("waveform");
+
+    companion object {
+        fun fromId(id: String?, legacyWavyEnabled: Boolean?): SeekbarStyle {
+            if (id != null) {
+                return entries.firstOrNull { it.id == id }
+                    ?: if (legacyWavyEnabled == true) WAVY else DEFAULT
+            }
+            return if (legacyWavyEnabled == true) WAVY else DEFAULT
+        }
+    }
+}
+
 /** How a track reaches the selected streaming quality. Downgrades are always seamless. */
 enum class HiResStart(val id: String, val title: String, val subtitle: String) {
     FAST("fast", "Fast start", "Start on Opus, then switch to your quality when ready"),
-    DIRECT("direct", "Best quality first", "Wait for your quality; Opus only if it's slow"),
+    DIRECT("direct", "Best quality first", "Wait up to 8 s for your quality, then Opus"),
     NEVER("never", "Never upgrade", "Keep the stream a song starts with");
 
     companion object {
         fun fromId(id: String?, legacyAutoUpgrade: Boolean?): HiResStart =
-            entries.firstOrNull { it.id == id } ?: if (legacyAutoUpgrade == false) NEVER else FAST
+            entries.firstOrNull { it.id == id } ?: if (legacyAutoUpgrade == false) NEVER else DIRECT
     }
 }
 
@@ -126,6 +143,10 @@ data class MiscSettings(
      *  font (see ui/theme/Type.kt); off: the device's own system font.
      *  Defaults on so the app ships with its own identity out of the box. */
     val useCustomFont: Boolean = true,
+    /** "Use Bold Font": on draws every piece of text, lyrics included, in a heavier weight. */
+    val useBoldFont: Boolean = false,
+    /** Scrolling a tab shrinks the nav bar to an icon pill with the mini player docked beside it. Off keeps the classic bar. */
+    val collapsingNavBar: Boolean = true,
     /** Last.fm usernames pinned to the top of Home's friend-switcher sheet
      *  (long-press a friend row to toggle). Order among pinned friends
      *  follows whatever order user.getfriends itself returns them in —
@@ -134,7 +155,7 @@ data class MiscSettings(
     /** When true, the player attempts to resolve and stream lossless / Hi-Res audio
      *  directly from lossless CDN when a high-confidence match exists. Falls back to YouTube Music. */
     val preferLosslessStreaming: Boolean = true,
-    val hiResStart: HiResStart = HiResStart.FAST,
+    val hiResStart: HiResStart = HiResStart.DIRECT,
     /** When true, the player also queries installed provider modules in
      *  parallel with the addon; a module hit plays instantly on miss. */
     val preferProviderModules: Boolean = true,
@@ -182,8 +203,10 @@ data class MiscSettings(
     val autoplaySimilarEnabled: Boolean = true,
     /** Crossfade length in seconds; kept within the native settings slider range. */
     val crossfadeSeconds: Int = 5,
-    /** Animated wavy seekbar in the player; off by default (classic slider). */
-    val wavySeekbarEnabled: Boolean = false,
+    /** Player seekbar visual style (Default, Wavy, Waveform). */
+    val seekbarStyle: SeekbarStyle = SeekbarStyle.DEFAULT,
+    /** Animated wavy seekbar in the player (kept for backward compatibility). */
+    val wavySeekbarEnabled: Boolean = (seekbarStyle == SeekbarStyle.WAVY),
     val rotatingBackgroundEnabled: Boolean = true,
     /** When true, animates fluid rotating artwork in the lyrics background.
      *  When false (default), uses static blurred artwork background in the lyrics view. */
@@ -258,7 +281,7 @@ data class MiscSettings(
     /** Display name used in LastWave Jam sessions. */
     val jamDisplayName: String = "",
     /** Custom Jam WebSocket server URL. */
-    val jamServerUrl: String = "wss://jam.clashprojects.qd.je/ws",
+    val jamServerUrl: String = "wss://jam.clashgram.org/ws",
     /** Jam Room Mode default: "collaborative" or "host_only". */
     val jamRoomMode: String = "collaborative",
     /** Apple Music-style tactile rhythm synchronization. */
@@ -310,6 +333,7 @@ val DEFAULT_SECTION_ORDER: List<String> = listOf(
     "yt:Live performances",
     "friends_activity",
     "podcast_shelf",
+    "moods_and_genres",
     "yt:Similar to",
     "yt:Music video for you",
     "yt:Trending songs for you",
@@ -404,6 +428,8 @@ class SettingsPreferences @Inject constructor(
     private object Keys {
         val DYNAMIC_NOW_PLAYING = booleanPreferencesKey("lw_dynamic_now_playing")
         val USE_CUSTOM_FONT = booleanPreferencesKey("lw_use_custom_font")
+        val USE_BOLD_FONT = booleanPreferencesKey("lw_use_bold_font")
+        val COLLAPSING_NAV_BAR = booleanPreferencesKey("lw_collapsing_nav_bar")
         val PINNED_FRIENDS = stringSetPreferencesKey("lw_pinned_friends")
         val PREFER_LOSSLESS_STREAMING = booleanPreferencesKey("lw_prefer_lossless_streaming")
         /** Legacy on/off toggle; read once to seed [HI_RES_START]. */
@@ -429,6 +455,7 @@ class SettingsPreferences @Inject constructor(
         val CROSSFADE_ENABLED = booleanPreferencesKey("lw_crossfade_enabled")
         val AUTOPLAY_SIMILAR_ENABLED = booleanPreferencesKey("lw_autoplay_similar_enabled")
         val CROSSFADE_SECONDS = intPreferencesKey("lw_crossfade_seconds")
+        val SEEKBAR_STYLE = stringPreferencesKey("lw_seekbar_style")
         val WAVY_SEEKBAR_ENABLED = booleanPreferencesKey("lw_wavy_seekbar_enabled")
         val ROTATING_BACKGROUND_ENABLED = booleanPreferencesKey("lw_rotating_background_enabled")
         val LYRICS_ROTATING_BACKGROUND_ENABLED = booleanPreferencesKey("lw_lyrics_rotating_background_enabled")
@@ -511,6 +538,8 @@ class SettingsPreferences @Inject constructor(
             MiscSettings(
                 dynamicNowPlayingEnabled = p.readSafely(Keys.DYNAMIC_NOW_PLAYING) ?: false,
                 useCustomFont = p.readSafely(Keys.USE_CUSTOM_FONT) ?: true,
+                useBoldFont = p.readSafely(Keys.USE_BOLD_FONT) ?: false,
+                collapsingNavBar = p.readSafely(Keys.COLLAPSING_NAV_BAR) ?: true,
                 pinnedFriends = p.readSafely(Keys.PINNED_FRIENDS) ?: emptySet(),
                 preferLosslessStreaming = p.readSafely(Keys.PREFER_LOSSLESS_STREAMING) ?: true,
                 hiResStart = HiResStart.fromId(p.readSafely(Keys.HI_RES_START), p.readSafely(Keys.AUTO_UPGRADE_HI_RES)),
@@ -529,8 +558,9 @@ class SettingsPreferences @Inject constructor(
                 musicVideoEnabled = p.readSafely(Keys.MUSIC_VIDEO_ENABLED) ?: true,
                 showAutoEqInVolumePanel = p.readSafely(Keys.SHOW_AUTO_EQ_IN_VOLUME_PANEL) ?: true,
                 isStudioMasterClarityEnabled = p.readSafely(Keys.MUSIC_ENHANCER) ?: true,
-                clarityPreset = p.readSafely(Keys.CLARITY_PRESET)?.takeIf { it in 0..3 } ?: 0,
-                clarityAtmosBypass = p.readSafely(Keys.CLARITY_ATMOS_BYPASS) ?: false,
+                // Clarity is a single on/off again: always the Reference curve, never bypassed on spatial.
+                clarityPreset = 0,
+                clarityAtmosBypass = false,
                 isBitPerfectEnabled = p.readSafely(Keys.BIT_PERFECT_ENABLED) ?: false,
                 wordByWordLyrics = p.readSafely(Keys.WORD_BY_WORD_LYRICS) ?: true,
                 lyricsProvider = LyricsProvider.fromId(p.readSafely(Keys.LYRICS_PROVIDER)),
@@ -541,7 +571,8 @@ class SettingsPreferences @Inject constructor(
                 crossfadeEnabled = p.readSafely(Keys.CROSSFADE_ENABLED) ?: false,
                 autoplaySimilarEnabled = p.readSafely(Keys.AUTOPLAY_SIMILAR_ENABLED) ?: true,
                 crossfadeSeconds = (p.readSafely(Keys.CROSSFADE_SECONDS) ?: 5).coerceIn(1, 12),
-                wavySeekbarEnabled = p.readSafely(Keys.WAVY_SEEKBAR_ENABLED) ?: false,
+                seekbarStyle = SeekbarStyle.fromId(p.readSafely(Keys.SEEKBAR_STYLE), p.readSafely(Keys.WAVY_SEEKBAR_ENABLED)),
+                wavySeekbarEnabled = SeekbarStyle.fromId(p.readSafely(Keys.SEEKBAR_STYLE), p.readSafely(Keys.WAVY_SEEKBAR_ENABLED)) == SeekbarStyle.WAVY,
                 rotatingBackgroundEnabled = p.readSafely(Keys.ROTATING_BACKGROUND_ENABLED) ?: true,
                 lyricsRotatingBackgroundEnabled = p.readSafely(Keys.LYRICS_ROTATING_BACKGROUND_ENABLED) ?: false,
                 keepLyricsScreenAwake = p.readSafely(Keys.KEEP_LYRICS_SCREEN_AWAKE) ?: false,
@@ -576,7 +607,12 @@ class SettingsPreferences @Inject constructor(
                 suppressYouTubeLoginPrompt = p.readSafely(Keys.SUPPRESS_YOUTUBE_LOGIN_PROMPT) ?: false,
                 hasDismissedJoinSupportPrompt = p.readSafely(Keys.HAS_DISMISSED_JOIN_SUPPORT_PROMPT) ?: false,
                 jamDisplayName = p.readSafely(Keys.JAM_DISPLAY_NAME)?.trim().orEmpty(),
-                jamServerUrl = p.readSafely(Keys.JAM_SERVER_URL)?.trim().takeIf { !it.isNullOrBlank() } ?: "wss://jam.clashprojects.qd.je/ws",
+                jamServerUrl = p.readSafely(Keys.JAM_SERVER_URL)?.trim().let { raw ->
+                    when {
+                        raw.isNullOrBlank() || raw == "wss://jam.clashprojects.qd.je/ws" -> "wss://jam.clashgram.org/ws"
+                        else -> raw
+                    }
+                },
                 jamRoomMode = p.readSafely(Keys.JAM_ROOM_MODE)?.trim().takeIf { it == "host_only" || it == "collaborative" } ?: "collaborative",
                 musicHapticsEnabled = p.readSafely(Keys.MUSIC_HAPTICS_ENABLED) ?: false,
                 musicHapticsMode = MusicHapticsMode.fromName(p.readSafely(Keys.MUSIC_HAPTICS_MODE)),
@@ -769,6 +805,14 @@ class SettingsPreferences @Inject constructor(
         dataStore.edit { it[Keys.USE_CUSTOM_FONT] = enabled }
     }
 
+    suspend fun setUseBoldFont(enabled: Boolean) {
+        dataStore.edit { it[Keys.USE_BOLD_FONT] = enabled }
+    }
+
+    suspend fun setCollapsingNavBar(enabled: Boolean) {
+        dataStore.edit { it[Keys.COLLAPSING_NAV_BAR] = enabled }
+    }
+
     suspend fun setPodcastsEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.PODCASTS_ENABLED] = enabled }
     }
@@ -952,8 +996,15 @@ class SettingsPreferences @Inject constructor(
         dataStore.edit { it[Keys.CROSSFADE_SECONDS] = seconds.coerceIn(1, 12) }
     }
 
+    suspend fun setSeekbarStyle(style: SeekbarStyle) {
+        dataStore.edit {
+            it[Keys.SEEKBAR_STYLE] = style.id
+            it[Keys.WAVY_SEEKBAR_ENABLED] = (style == SeekbarStyle.WAVY)
+        }
+    }
+
     suspend fun setWavySeekbarEnabled(enabled: Boolean) {
-        dataStore.edit { it[Keys.WAVY_SEEKBAR_ENABLED] = enabled }
+        setSeekbarStyle(if (enabled) SeekbarStyle.WAVY else SeekbarStyle.DEFAULT)
     }
 
     suspend fun setRotatingBackgroundEnabled(enabled: Boolean) {
@@ -1156,7 +1207,7 @@ class SettingsPreferences @Inject constructor(
     }
 
     suspend fun setJamServerUrl(url: String) {
-        val trimmed = url.trim().ifEmpty { "wss://jam.clashprojects.qd.je/ws" }
+        val trimmed = url.trim().ifEmpty { "wss://jam.clashgram.org/ws" }
         dataStore.edit { it[Keys.JAM_SERVER_URL] = trimmed }
     }
 

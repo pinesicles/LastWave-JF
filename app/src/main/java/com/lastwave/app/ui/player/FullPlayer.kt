@@ -2,6 +2,7 @@
 
 package com.lastwave.app.ui.player
 
+import com.lastwave.app.data.local.SeekbarStyle
 import androidx.compose.material.icons.outlined.AddCircleOutline
 import androidx.compose.material.icons.filled.CheckCircle
 import com.lastwave.app.data.playlist.isLikedIn
@@ -79,7 +80,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -104,6 +104,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -239,6 +240,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -343,7 +346,8 @@ internal fun FullPlayer(
     progressState: StateFlow<PlaybackProgressState>,
     player: MusicPlayer,
     lyricsState: LyricsUiState,
-    wavySeekbarEnabled: Boolean = false,
+    seekbarStyle: SeekbarStyle = SeekbarStyle.DEFAULT,
+    wavySeekbarEnabled: Boolean = (seekbarStyle == SeekbarStyle.WAVY),
     rotatingBackgroundEnabled: Boolean = true,
     lyricsRotatingBackgroundEnabled: Boolean = false,
     lyricsOffsetMs: Long = 0L,
@@ -371,6 +375,7 @@ internal fun FullPlayer(
     youTubeLiked: Boolean? = null,
     onToggleYouTubeLike: () -> Unit = {},
     onDragStatusChange: (Boolean) -> Unit = {},
+    isOpen: Boolean = true,
     lyricsProviderStatuses: Map<com.lastwave.app.data.local.LyricsProvider, LyricsSyncType> = emptyMap(),
     onProbeLyricsProviders: (() -> Unit)? = null,
     onSelectLyricsProvider: ((com.lastwave.app.data.local.LyricsProvider) -> Unit)? = null,
@@ -406,10 +411,10 @@ internal fun FullPlayer(
         delay(VIDEO_PRELOAD_DELAY_MS)
         syncedVideoVm.preloadVideo(track.title, track.artist, track.videoId, track.durationMs)
     }
-    // Full bleed works wherever the player uses the single-column layout:
-    // phones and tablets in portrait. Only tablet landscape (two columns,
-    // cover beside the controls) keeps the boxed sleeve.
-    val fullBleedBlocked = isTablet && isLandscape
+    // This full bleed is the single-column (portrait) hero. The two-column
+    // landscape layout draws its own full-bleed art pane on the left
+    // (LandscapeArtworkPane), so the portrait hero must not paint behind it.
+    val fullBleedBlocked = isTabletLandscape
     val showFullBleed = canvasFullBleedEnabled && !isVideoActive && !fullBleedBlocked
     val showSleeveCanvas = isCanvasActive && !showFullBleed && !isVideoActive
     // activeCanvas is the single gate every render branch below keys off, so it also
@@ -489,7 +494,6 @@ internal fun FullPlayer(
     var artworkDragX by remember(track.videoId, track.title) { mutableFloatStateOf(0f) }
     var dismissDragY by remember(track.videoId, track.title) { mutableFloatStateOf(0f) }
     var isDismissDragging by remember { mutableStateOf(false) }
-    LaunchedEffect(isDismissDragging) { onDragStatusChange(isDismissDragging) }
     var seekOverlayDirection by remember(track.videoId, track.title) { mutableStateOf<SeekDirection?>(null) }
     var seekOverlaySeconds by remember(track.videoId, track.title) { mutableIntStateOf(0) }
     var lastTapTimestamp by remember(track.videoId, track.title) { mutableLongStateOf(0L) }
@@ -507,6 +511,13 @@ internal fun FullPlayer(
         animationSpec = if (isDismissDragging) snap() else ExpressiveMotion.spatialSpring(),
         label = "fullPlayerDismissY",
     )
+    // The host stops drawing the shell while the player covers it. After the finger
+    // lifts the sheet is still offset while it springs back, so report until it lands.
+    val sheetMoving by remember { derivedStateOf { isDismissDragging || shownDismissY > 0.5f } }
+    LaunchedEffect(sheetMoving) { onDragStatusChange(sheetMoving) }
+    // A swipe-close keeps its offset for the close morph; reopening before that
+    // morph ends kept it too and left the player parked at the bottom.
+    LaunchedEffect(isOpen) { if (isOpen) dismissDragY = 0f }
     val swipeThreshold = with(LocalDensity.current) { 88.dp.toPx() }
 
     // Dominant cover-art color for the ambient background glow. Extracted
@@ -584,35 +595,45 @@ internal fun FullPlayer(
     )
 
     fun Modifier.playerVerticalSwipe(enabled: Boolean): Modifier = if (!enabled) this else pointerInput(track.videoId, track.title, currentTab) {
-        detectVerticalDragGestures(
-            onDragStart = { isDismissDragging = true },
-            onDragCancel = {
-                isDismissDragging = false
-                dismissDragY = 0f
-            },
-            onDragEnd = {
-                isDismissDragging = false
-                var collapsing = false
-                when {
-                    currentTab != FullPlayerTab.NOW_PLAYING && dismissDragY > swipeThreshold -> onTabChange(FullPlayerTab.NOW_PLAYING)
-                    currentTab == FullPlayerTab.NOW_PLAYING && dismissDragY < -swipeThreshold -> onTabChange(FullPlayerTab.QUEUE)
-                    currentTab == FullPlayerTab.NOW_PLAYING && dismissDragY > swipeThreshold -> {
-                        collapsing = true
-                        onCollapse()
-                    }
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var slopY = 0f
+            var dragging = false
+            while (true) {
+                // Final pass: a child that scrolled with this move (the lyrics list)
+                // has consumed it by now, and then the gesture stays the child's.
+                val change = awaitPointerEvent(PointerEventPass.Final).changes.firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed) break
+                val dy = change.positionChange().y
+                if (!dragging) {
+                    if (change.isConsumed) return@awaitEachGesture
+                    slopY += dy
+                    if (abs(slopY) < viewConfiguration.touchSlop) continue
+                    dragging = true
+                    isDismissDragging = true
                 }
-                // Collapsing keeps the dragged offset: the close morph carries
-                // the player away from there instead of it springing back first.
-                if (!collapsing) dismissDragY = 0f
-            },
-        ) { change, amount ->
-            val updatedDrag = if (currentTab != FullPlayerTab.NOW_PLAYING) {
-                (dismissDragY + amount).coerceAtLeast(0f)
-            } else {
-                dismissDragY + amount
+                val updatedDrag = if (currentTab != FullPlayerTab.NOW_PLAYING) {
+                    (dismissDragY + dy).coerceAtLeast(0f)
+                } else {
+                    dismissDragY + dy
+                }
+                if (updatedDrag != dismissDragY) change.consume()
+                dismissDragY = updatedDrag
             }
-            if (updatedDrag != dismissDragY) change.consume()
-            dismissDragY = updatedDrag
+            if (!dragging) return@awaitEachGesture
+            isDismissDragging = false
+            var collapsing = false
+            when {
+                currentTab == FullPlayerTab.QUEUE && dismissDragY > swipeThreshold -> onTabChange(FullPlayerTab.NOW_PLAYING)
+                currentTab == FullPlayerTab.NOW_PLAYING && dismissDragY < -swipeThreshold -> onTabChange(FullPlayerTab.QUEUE)
+                dismissDragY > swipeThreshold -> {
+                    collapsing = true
+                    onCollapse()
+                }
+            }
+            // Collapsing keeps the dragged offset: the close morph carries
+            // the player away from there instead of it springing back first.
+            if (!collapsing) dismissDragY = 0f
         }
     }
 
@@ -649,7 +670,9 @@ internal fun FullPlayer(
                 val playerHeight = size.height.coerceAtLeast(1f)
                 alpha = (1f - shownDismissY.coerceAtLeast(0f) / (playerHeight * 1.5f)).coerceIn(0.72f, 1f)
             }
-            .playerVerticalSwipe(enabled = currentTab == FullPlayerTab.NOW_PLAYING),
+            // Lyrics too: its list claims vertical drags first, so swiping down
+            // anywhere else (art pane, empty state, controls) closes the player.
+            .playerVerticalSwipe(enabled = currentTab != FullPlayerTab.QUEUE),
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val bgWidth = constraints.maxWidth.toFloat()
@@ -965,10 +988,14 @@ internal fun FullPlayer(
                     }
                 }
             }
+            // Bottom inset is applied per tab below, so the queue can run under the gesture pill.
+            val showError = state.error != null && !lyricsFullscreen
+            val bottomInset = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
+            val tabBottomInset = if (showError) 0.dp else bottomInset
             Column(
                 Modifier
                     .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.safeDrawing),
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 // â”€â”€ Header: slimmer, calmer, premium â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -995,7 +1022,7 @@ internal fun FullPlayer(
                                 .fillMaxWidth()
                                 .height(52.dp)
                                 .padding(horizontal = if (isTabletLandscape) 32.dp else 20.dp)
-                                .playerVerticalSwipe(enabled = currentTab != FullPlayerTab.NOW_PLAYING),
+                                .playerVerticalSwipe(enabled = currentTab == FullPlayerTab.QUEUE),
                         ) {
                             // FullPlayer sits on a dark blurred-artwork scrim in both light and
                             // dark mode, so foreground must use the white overlay palette â€”
@@ -1139,6 +1166,7 @@ internal fun FullPlayer(
                     },
                     label = "playerTabContent",
                 ) { tab ->
+                    Box(Modifier.padding(bottom = if (tab == FullPlayerTab.QUEUE) 0.dp else tabBottomInset)) {
                     when (tab) {
                         FullPlayerTab.LYRICS -> {
                             PredictiveBackScreen(
@@ -1152,6 +1180,27 @@ internal fun FullPlayer(
                                     }
                                 },
                             ) {
+                                // Landscape: lyrics beside the same full-bleed art pane as
+                                // Now Playing.
+                                // Lyrics' own fullscreen still takes the whole width.
+                                val landscapeSplit = isTabletLandscape && !lyricsFullscreen
+                                Row(Modifier.fillMaxSize()) {
+                                if (landscapeSplit) {
+                                    LandscapeArtworkPane(
+                                        track = track,
+                                        state = state,
+                                        player = player,
+                                        canvas = if (showSleeveCanvas) activeCanvas ?: canvas else null,
+                                        resolvedArtworkUrl = resolvedAmbientUrl,
+                                        onDoubleTapLike = onDoubleTapLike,
+                                        shownDismissY = shownDismissY,
+                                        swipeThreshold = swipeThreshold,
+                                        isVideoActive = isVideoActive,
+                                        onCloseVideo = { syncedVideoVm.setVideoActive(false) },
+                                        onEnterFullscreen = { isVideoFullscreen = true },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
                                 ModernLyricsPanel(
                                     state = state,
                                     player = player,
@@ -1159,6 +1208,7 @@ internal fun FullPlayer(
                                     lyricsProviderStatuses = lyricsProviderStatuses,
                                     onProbeLyricsProviders = onProbeLyricsProviders,
                                     progressState = progressState,
+                                    seekbarStyle = seekbarStyle,
                                     wavySeekbarEnabled = wavySeekbarEnabled,
                                     lyricsOffsetMs = lyricsOffsetMs,
                                     lyricsFontScale = lyricsFontScale,
@@ -1177,10 +1227,17 @@ internal fun FullPlayer(
                                     secondaryColor = ambientCompanion,
                                     tertiaryColor = ambientDeep,
                                     resolvedArtworkUrl = resolvedAmbientUrl,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .adaptiveContentWidth(maxWidth = if (isTabletLandscape) 960.dp else 720.dp),
+                                    modifier = if (landscapeSplit) {
+                                        Modifier
+                                            .weight(1.15f)
+                                            .fillMaxHeight()
+                                    } else {
+                                        Modifier
+                                            .fillMaxSize()
+                                            .adaptiveContentWidth(maxWidth = if (isTabletLandscape) 960.dp else 720.dp)
+                                    },
                                 )
+                                }
                             }
                         }
 
@@ -1193,7 +1250,8 @@ internal fun FullPlayer(
                                 QueuePanel(
                                     state,
                                     player,
-                                    Modifier
+                                    bottomPadding = tabBottomInset,
+                                    modifier = Modifier
                                         .fillMaxSize()
                                         .adaptiveContentWidth(maxWidth = if (isTabletLandscape) 960.dp else 720.dp)
                                         .padding(horizontal = 12.dp),
@@ -1208,6 +1266,7 @@ internal fun FullPlayer(
                                     state = state,
                                     player = player,
                                     progressState = progressState,
+                                    seekbarStyle = seekbarStyle,
                                     wavySeekbarEnabled = wavySeekbarEnabled,
                                     showSleeveCanvas = showSleeveCanvas,
                                     canvas = activeCanvas ?: canvas,
@@ -1230,6 +1289,7 @@ internal fun FullPlayer(
                                     onCloseVideo = { syncedVideoVm.setVideoActive(false) },
                                     onEnterFullscreen = { isVideoFullscreen = true },
                                     onToggleVideo = onToggleSyncedVideo,
+                                    resolvedArtworkUrl = resolvedAmbientUrl,
                                 )
                             } else {
                                 // â”€â”€ Standard layout (lifted and balanced) â”€â”€â”€â”€â”€â”€
@@ -1639,48 +1699,11 @@ internal fun FullPlayer(
                                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                         ) {
-                                            val likeInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-                                            val isLikePressed by likeInteraction.collectIsPressedAsState()
-                                            val likeScale by animateFloatAsState(
-                                                targetValue = if (isLikePressed) 0.78f else 1.0f,
-                                                animationSpec = spring(
-                                                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                                                    stiffness = Spring.StiffnessMediumLow,
-                                                ),
-                                                label = "likeScale",
-                                            )
-                                            LiquidGlassSurface(
-                                                glassModifier = Modifier.liquidGlassChrome(CircleShape, LocalLiquidGlass.current, LiquidGlassPreset.PlayerControls, interactionSource = likeInteraction),
+                                            PlayerLikeButton(
+                                                liked = isLiked,
                                                 onClick = hapticClick(if (isLiked) HapticFeedbackType.ToggleOff else HapticFeedbackType.Confirm, onToggleLiked),
-                                                interactionSource = likeInteraction,
-                                                shape = CircleShape,
-                                                color = liquidGlassContainerColor(if (isLiked) {
-                                                    Color.White.copy(alpha = 0.92f)
-                                                } else {
-                                                    Color.White.copy(alpha = 0.14f)
-                                                }),
-                                                contentColor = if (isLiked) {
-                                                    Color(0xFFE91E63)
-                                                } else {
-                                                    Color.White.copy(alpha = 0.85f)
-                                                },
-                                                tonalElevation = 0.dp,
-                                                shadowElevation = 0.dp,
-                                                modifier = Modifier
-                                                    .size(46.dp)
-                                                    .graphicsLayer {
-                                                        scaleX = likeScale
-                                                        scaleY = likeScale
-                                                    },
-                                            ) {
-                                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                                    Icon(
-                                                        if (isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                                                        contentDescription = if (isLiked) "Unlike song" else "Like song",
-                                                        modifier = Modifier.size(24.dp),
-                                                    )
-                                                }
-                                            }
+                                                size = 48.dp,
+                                            )
                                             val lyricsInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                                             val isLyricsPressed by lyricsInteraction.collectIsPressedAsState()
                                             val lyricsScale by animateFloatAsState(
@@ -1719,6 +1742,7 @@ internal fun FullPlayer(
                                         progressState = progressState,
                                         isPlaying = state.isPlaying,
                                         trackKey = track.videoId ?: "${track.artist}|${track.title}",
+                                        seekbarStyle = seekbarStyle,
                                         wavyEnabled = wavySeekbarEnabled,
                                         onSeek = player::seekTo,
                                         isTranslucent = LocalLiquidGlass.current || showFullBleed,
@@ -1754,14 +1778,15 @@ internal fun FullPlayer(
                             }
                         }
                     }
+                    }
                 }
-                state.error?.takeUnless { lyricsFullscreen }?.let { message ->
+                state.error?.takeIf { showError }?.let { message ->
                     Surface(
                         onClick = hapticClick(action = player::retry),
                         shape = RoundedCornerShape(20.dp),
                         color = MaterialTheme.colorScheme.errorContainer,
                         contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp + bottomInset),
                     ) {
                         Row(
                             Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -1800,6 +1825,7 @@ internal fun FullPlayer(
             capabilities = TrackMenuCapabilities(
                 showCopyActions = true,
                 showDeleteScrobble = false,
+                showRecommendationExclusion = true,
             ),
             playableTrack = track,
             onDismiss = { showTrackMenu = false },

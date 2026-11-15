@@ -392,41 +392,18 @@ class PlayerViewModel @Inject constructor(
     private var customPlaylistsLoaded = false
     val likedTrackKeys = trackLikeController.likedTrackKeys
 
-    /**
-     * The current song's like state on YouTube Music — SimpMusic's likeStatus.
-     * Null hides the button: signed out, no YouTube id, or not read yet.
-     * Re-read from YouTube on every track change and after every toggle; it is
-     * never inferred from the local heart.
-     */
-    private val _youTubeLiked = MutableStateFlow<Boolean?>(null)
-    val youTubeLiked = _youTubeLiked.asStateFlow()
-    private var youTubeLikeJob: kotlinx.coroutines.Job? = null
+    // Account controls project the same state as the heart. A second status read
+    // could arrive after a tap and make the next request perform the opposite action.
+    val youTubeLiked: StateFlow<Boolean?> = combine(
+        player.chromeState,
+        likedTrackKeys,
+        trackLikeController.youTubeConnection,
+    ) { state, keys, _ ->
+        state.current?.takeIf(trackLikeController::canUseYouTubeLike)
+            ?.let { trackLikeController.isLiked(it, keys) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    private fun refreshYouTubeLike(track: PlayableTrack?) {
-        youTubeLikeJob?.cancel()
-        _youTubeLiked.value = null
-        if (track == null || !trackLikeController.canUseYouTubeLike(track)) return
-        youTubeLikeJob = viewModelScope.launch {
-            val status = trackLikeController.youTubeLikeStatus(track)
-            if (player.chromeState.value.current?.videoId == track.videoId) _youTubeLiked.value = status ?: false
-        }
-    }
-
-    /** SimpMusic's addToYouTubeLiked(): toggles ONLY the YouTube Music like, then re-reads it. */
-    fun toggleYouTubeLike(track: PlayableTrack) {
-        val current = _youTubeLiked.value ?: return
-        viewModelScope.launch {
-            val ok = trackLikeController.setYouTubeLike(track, currentlyLiked = current)
-            _toastMessage.emit(
-                when {
-                    !ok -> "Couldn't update YouTube Music"
-                    current -> "Removed from YouTube Liked"
-                    else -> "Added to YouTube Liked"
-                },
-            )
-            if (ok) refreshYouTubeLike(track)
-        }
-    }
+    fun toggleYouTubeLike(track: PlayableTrack) = toggleLiked(track)
 
     private val _toastMessage = MutableSharedFlow<String>()
     val toastMessage = _toastMessage.asSharedFlow()
@@ -490,11 +467,6 @@ class PlayerViewModel @Inject constructor(
     init {
         player.restoreSessionIfNeeded()
         viewModelScope.launch {
-            player.chromeState.map { it.current }
-                .distinctUntilChanged { old, new -> old?.videoId == new?.videoId && old?.title == new?.title }
-                .collect { refreshYouTubeLike(it) }
-        }
-        viewModelScope.launch {
             playlistRepository.changes.collect {
                 if (customPlaylistsLoaded) refreshCustomPlaylists()
             }
@@ -511,11 +483,16 @@ class PlayerViewModel @Inject constructor(
             ) { track, wordByWord -> track to wordByWord }.collect { (track, wordByWord) ->
                 val key = track?.let { "${it.videoId ?: ""}|${it.artist}|${it.title}|$wordByWord" }
                 if (key != currentTrackLyricsKey) {
+                    // Only the last field (word-by-word) differs on a same-song refresh.
+                    val songChanged = key?.substringBeforeLast('|') != currentTrackLyricsKey?.substringBeforeLast('|')
                     currentTrackLyricsKey = key
                     spotLyricsOverride = Pair(null, emptySet())
                     probeLyricsJob?.cancel()
                     _lyricsProviderStatuses.value = emptyMap()
                     if (track != null) {
+                        // The fetch waits for audio plus a settle delay (up to ~11 s); the old
+                        // song's lines must not stay up meanwhile, where a tap seeks the new song.
+                        if (songChanged) _lyricsState.value = LyricsUiState.Loading
                         loadLyrics(track, forceRefresh = false)
                     } else {
                         lyricsJob?.cancel()
@@ -915,11 +892,9 @@ class PlayerViewModel @Inject constructor(
 
     fun toggleLiked(track: PlayableTrack) {
         viewModelScope.launch {
-            // Local only (SimpMusic): the heart never touches YouTube or Last.fm.
-            // The write can fail while a sync pass holds the database, and an
-            // uncaught exception here takes the process down, so report it.
             try {
-                trackLikeController.toggle(track)
+                val liked = trackLikeController.toggle(track)
+                _toastMessage.emit(if (liked) "Added to Liked Songs" else "Removed from Liked Songs")
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {

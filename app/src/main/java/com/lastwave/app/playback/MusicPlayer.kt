@@ -87,6 +87,7 @@ import com.lastwave.app.data.music.ConfirmedUnplayableMediaException
 import com.lastwave.app.data.music.YouTubeAudioStream
 import com.lastwave.app.data.music.YouTubeMusicTrack
 import com.lastwave.app.data.music.YOUTUBE_WEB_USER_AGENT
+import com.lastwave.app.data.lossless.AddonTrackMatched
 import com.lastwave.app.data.lossless.LosslessAudioStream
 import com.lastwave.app.data.lossless.LosslessMusicApi
 import com.lastwave.app.data.network.NetworkMonitor
@@ -410,6 +411,7 @@ class MusicPlayer @Inject constructor(
     /** Same, for the inaudible-but-rendering branch + its position cursor. */
     private var inaudibleSinceMs = 0L
     private var lastAdvancingPositionMs = -1L
+    private var lastMusicActiveCheckMs = 0L
     /** Recovery attempts per mediaId, so a hopeless window stops at 2 and
      *  the existing error/unavailable machinery owns it from there. */
     private val silentRecoveries = mutableMapOf<String, Int>()
@@ -2122,7 +2124,6 @@ class MusicPlayer @Inject constructor(
                     // at 0:00 while the notification looked normal. Paused /
                     // ended states still freeze via isPlaying=false.
                     if (!isCasting) {
-                        val livePlaying = player.isPlaying
                         val playingNow = _state.value.isPlaying &&
                             !exclusiveUsbOutput.isPaused() &&
                             usbAlive
@@ -2447,7 +2448,7 @@ class MusicPlayer @Inject constructor(
             settingsPreferences.settings.collect { settings ->
                 val previousPlaybackSettings = latestPlaybackSettings
                 latestPlaybackSettings = settings
-                if (previousPlaybackSettings.hiResStart != HiResStart.NEVER && settings.hiResStart == HiResStart.NEVER) {
+                if (previousPlaybackSettings.hiResStart == HiResStart.FAST && settings.hiResStart != HiResStart.FAST) {
                     cancelActiveUpgrade()
                 }
                 musicHapticsController.updateConfig(settings.musicHapticsConfig)
@@ -3091,6 +3092,21 @@ class MusicPlayer @Inject constructor(
                 player.play()
             }
             persistPlaybackSession()
+        }
+    }
+
+    /**
+     * "Start Mix": the playing song carries on untouched and everything after
+     * it becomes [tracks]. One main-thread step, so nothing can be queued
+     * between the clear and the append; clearing also stops radio/discover
+     * from refilling the queue around the mix. With nothing playing, the
+     * append starts the mix itself.
+     */
+    fun replaceUpcoming(tracks: List<PlayableTrack>) {
+        if (tracks.isEmpty()) return
+        onMain {
+            clearUpcoming()
+            appendTracksToQueue(tracks)
         }
     }
 
@@ -4031,6 +4047,24 @@ class MusicPlayer @Inject constructor(
         cancelCrossfade()
         if (index in 0 until player.mediaItemCount) player.removeMediaItem(index)
     }
+    fun insertQueueItem(index: Int, track: PlayableTrack) = onMain {
+        val enriched = track.withYoutubeArtwork()
+        if (isCasting) {
+            val snapshot = _state.value
+            val queue = snapshot.queue.toMutableList()
+            val safeIndex = index.coerceIn(0, queue.size)
+            queue.add(safeIndex, enriched)
+            val currentIndex = (snapshot.currentIndex + if (safeIndex <= snapshot.currentIndex) 1 else 0)
+                .coerceIn(queue.indices)
+            _state.value = snapshot.copy(queue = queue, currentIndex = currentIndex, current = queue[currentIndex])
+            persistPlaybackSession()
+            return@onMain
+        }
+        val safeIndex = index.coerceIn(0, player.mediaItemCount)
+        player.addMediaItem(safeIndex, enriched.toMediaItem())
+        refresh(player)
+        persistPlaybackSession()
+    }
     fun clearQueueKeepCurrent() = onMain {
         cancelCrossfade()
         if (isCasting) {
@@ -4335,13 +4369,19 @@ class MusicPlayer @Inject constructor(
                 if (prefixJob == null) warmUpcomingSearches(nextIndex)
                 expectedMediaId = publishedId
                 prefixJob?.cancel()
+                val publishedUri = player.getMediaItemAt(nextIndex).localConfiguration?.uri
                 prefixJob = preloadScope.launch {
                     delay(NEXT_TRACK_PREFETCH_DELAY_MS)
-                    warmStreamPrefix(stream, generation)
+                    if (stream.mimeType == MimeTypes.APPLICATION_MPD) {
+                        publishedUri?.let { warmDashPrefix(it, generation) }
+                    } else {
+                        warmStreamPrefix(stream, generation)
+                    }
                 }
             }
 
-            if (wantProvider) launch {
+            val direct = misc.hiResStart == HiResStart.DIRECT
+            val providerJob = if (wantProvider) launch {
                 val candidate = withTimeoutOrNull(LOSSLESS_BACKGROUND_BUDGET_MS) {
                     runCatching {
                         resolveLosslessTrackAudioStream(
@@ -4353,10 +4393,21 @@ class MusicPlayer @Inject constructor(
                         )
                     }.onFailure { if (it is CancellationException) throw it }.getOrNull()
                 }
-                if (candidate != null && isProviderReadyForStartup(candidate)) publish(candidate)
-            }
+                val probeTimeoutMs = if (direct) STARTUP_PROVIDER_RESOLVE_MS else STARTUP_PROVIDER_PROBE_MS
+                // A DASH manifest cannot be byte-probed: the probe refused every
+                // one, so the next track always started on Opus.
+                val manifest = candidate != null &&
+                    (candidate.segmentedDrm != null || !candidate.mimeType.startsWith("audio/"))
+                if (candidate != null && (if (manifest) direct else isProviderReadyForStartup(candidate, probeTimeoutMs))) {
+                    publish(candidate)
+                }
+            } else null
             launch {
-                resolvePreloadYoutube(nextTrack, quality)?.let { publish(it) }
+                val youtube = resolvePreloadYoutube(nextTrack, quality)
+                // "Best quality first": Opus published early was buffered and
+                // played when the song changed before the provider answered.
+                if (direct) providerJob?.join()
+                youtube?.let { publish(it) }
             }
         }
     }
@@ -4462,6 +4513,34 @@ class MusicPlayer @Inject constructor(
             // A speculative prefix may fail while the stream remains usable.
         } finally {
             runCatching { source.close() }
+        }
+    }
+
+    /** Caches the opening DASH segments under the keys the player's chunk source reads. */
+    private suspend fun warmDashPrefix(manifestUri: Uri, generation: Long) {
+        if (!canWarmPlayback(generation)) return
+        try {
+            val manifest = androidx.media3.exoplayer.upstream.ParsingLoadable.load(
+                cacheDataSourceFactory.createDataSource(),
+                com.lastwave.app.data.plugin.AlacDashManifestParser(),
+                manifestUri,
+                C.DATA_TYPE_MANIFEST,
+            )
+            // shortcut: first representation only, fine while manifests carry one; pick by track selection if that changes.
+            val representation = manifest.getPeriod(0).adaptationSets.firstOrNull()?.representations?.firstOrNull() ?: return
+            val index = representation.index ?: return
+            val baseUrl = representation.baseUrls.firstOrNull()?.url ?: return
+            val available = index.getSegmentCount(manifest.getPeriodDurationUs(0)).takeIf { it > 0 } ?: NEXT_TRACK_PREFETCH_SEGMENTS
+            val first = index.firstSegmentNum
+            val segments = listOfNotNull(representation.initializationUri) +
+                (first until first + minOf(available, NEXT_TRACK_PREFETCH_SEGMENTS)).map(index::getSegmentUrl)
+            for (segment in segments) {
+                if (!canWarmPlayback(generation)) return
+                cacheSingleChunk(androidx.media3.exoplayer.dash.DashUtil.buildDataSpec(representation, baseUrl, segment, 0))
+            }
+            android.util.Log.i("MusicPlayer", "[PRELOAD] warmed ${segments.size} DASH segments")
+        } catch (_: java.io.IOException) {
+            // A speculative prefix may fail while the stream remains usable.
         }
     }
 
@@ -5164,6 +5243,7 @@ class MusicPlayer @Inject constructor(
         lastRenderPositionMs = -1L
         lastRenderBufferedMs = -1L
         lastAdvancingPositionMs = -1L
+        lastMusicActiveCheckMs = 0L
     }
 
     /**
@@ -5246,7 +5326,11 @@ class MusicPlayer @Inject constructor(
         // Rendering branch: position must be advancing (else the parked
         // branch above owns it) with no active music stream behind it.
         renderStallSinceMs = 0L
-        val directOutputBypass = exclusiveUsbOutput.isActive() || internalDirectOutput.isActive()
+        // isMusicActive is a binder call; at the 60 ms full-player cadence it
+        // was most of the main thread's playback work. 1 s is plenty for a 10 s timeout.
+        if (nowMs - lastMusicActiveCheckMs < MUSIC_ACTIVE_CHECK_INTERVAL_MS) return
+        lastMusicActiveCheckMs = nowMs
+        val directOutputBypass =exclusiveUsbOutput.isActive() || internalDirectOutput.isActive()
         val musicActive = directOutputBypass || runCatching { audioManager?.isMusicActive == true }.getOrDefault(true)
         if (posNow == lastAdvancingPositionMs || musicActive) {
             lastAdvancingPositionMs = posNow
@@ -6128,7 +6212,10 @@ class MusicPlayer @Inject constructor(
      * instead of failing inside ExoPlayer. The ranged read is drained so the
      * pooled connection can be reused by the player's own open.
      */
-    private suspend fun isProviderReadyForStartup(stream: ResolvedStream): Boolean {
+    private suspend fun isProviderReadyForStartup(
+        stream: ResolvedStream,
+        timeoutMs: Long = STARTUP_PROVIDER_PROBE_MS,
+    ): Boolean {
         if (stream.segmentedDrm != null || !stream.mimeType.startsWith("audio/")) return false
         if (stream.isExpired()) return false
         if (mediaCache.isCached(stream.cacheKey, 0L, STARTUP_PROBE_BYTES)) return true
@@ -6141,7 +6228,7 @@ class MusicPlayer @Inject constructor(
                 .build()
         }.getOrNull() ?: return false
         val startedAt = SystemClock.elapsedRealtime()
-        return withTimeoutOrNull(STARTUP_PROVIDER_PROBE_MS) {
+        return withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { continuation ->
                 val call = mediaHttpClient.newCall(request)
                 continuation.invokeOnCancellation { call.cancel() }
@@ -6172,7 +6259,7 @@ class MusicPlayer @Inject constructor(
                 })
             }
         } ?: false.also {
-            android.util.Log.i("MusicPlayer", "[STARTUP SOURCE] provider probe timed out after ${STARTUP_PROVIDER_PROBE_MS}ms")
+            android.util.Log.i("MusicPlayer", "[STARTUP SOURCE] provider probe timed out after ${timeoutMs}ms")
         }
     }
 
@@ -6213,9 +6300,10 @@ class MusicPlayer @Inject constructor(
         // A loader resolving a future queue item must never replace the active track's upgrade.
         val canPromote = claimPlayback && _state.value.current?.mediaIdKey() == track.mediaIdKey()
         val preparedProvider = prepared?.takeIf { it.youtubeCandidate == null }
+        val addonMatched = AddonTrackMatched()
         val provider = if (wantProvider && (preparedProvider != null || !losslessMusicApi.isCoolingDown)) {
             val resolveScope = if (canPromote) applicationScope else this
-            resolveScope.async(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            resolveScope.async(Dispatchers.IO + addonMatched, start = CoroutineStart.LAZY) {
                 preparedProvider ?: try {
                     resolveLosslessTrackAudioStream(
                         track = track,
@@ -6235,10 +6323,26 @@ class MusicPlayer @Inject constructor(
             }
         } else null
 
-        val providerDeadline = SystemClock.elapsedRealtime() + STARTUP_PROVIDER_RESOLVE_MS
+        // "Best quality first" waits for the addon, with YouTube resolving
+        // alongside from 0:00: 5 s, or 8 s if by then the addon has found the
+        // song and is still fetching its stream. An addon that answers
+        // nothing (none enabled, no match) hands over to YouTube at once.
+        val startDirect = miscSnapshot.hiResStart == HiResStart.DIRECT
+        val startedAtMs = SystemClock.elapsedRealtime()
+        suspend fun awaitProviderUntil(deadlineMs: Long): ResolvedStream? =
+            withTimeoutOrNull((deadlineMs - SystemClock.elapsedRealtime()).coerceAtLeast(1L)) { provider?.await() }
+        fun probeTimeoutMs(): Long = if (startDirect) {
+            (startedAtMs + BEST_QUALITY_RESOLVING_WAIT_MS - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
+        } else {
+            STARTUP_PROVIDER_PROBE_MS
+        }
         suspend fun awaitProvider(): ResolvedStream? = try {
-            val remaining = (providerDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
-            withTimeoutOrNull(remaining) { provider?.await() }
+            if (!startDirect) {
+                awaitProviderUntil(startedAtMs + STARTUP_PROVIDER_RESOLVE_MS)
+            } else {
+                awaitProviderUntil(startedAtMs + BEST_QUALITY_WAIT_MS)
+                    ?: if (addonMatched.matched) awaitProviderUntil(startedAtMs + BEST_QUALITY_RESOLVING_WAIT_MS) else null
+            }
         } catch (error: CancellationException) {
             currentCoroutineContext().ensureActive()
             null
@@ -6282,13 +6386,11 @@ class MusicPlayer @Inject constructor(
         fun isManifest(stream: ResolvedStream) = !stream.mimeType.startsWith("audio/") || stream.segmentedDrm != null
         suspend fun playableProvider(acceptManifest: Boolean): ResolvedStream? = awaitProvider()?.takeIf {
             isStreamAllowedForQuality(it, requestedQuality, miscSnapshot) &&
-                (if (isManifest(it)) acceptManifest else isProviderReadyForStartup(it))
+                (if (isManifest(it)) acceptManifest else isProviderReadyForStartup(it, probeTimeoutMs()))
         }
         // Whichever source is playable first starts. Waiting on the provider
         // first cost 5 s per song whenever it answered slowly or with an error;
         // the upgrade job promotes to the chosen tier once that is playable.
-        // "Start in Hi-Res" opts into that wait, still bounded by the provider deadline.
-        val startDirect = claimPlayback && miscSnapshot.hiResStart == HiResStart.DIRECT
         try {
             ((if (startDirect) {
                 racePlaybackCandidates(
@@ -7146,9 +7248,10 @@ class MusicPlayer @Inject constructor(
         val misc = latestPlaybackSettings
         val requestedQuality = requestedQualityOverride ?: selectedStreamingQuality(misc)
         val explicitlyChanging = requestedQualityOverride != null
-        // "Never upgrade" only blocks lossless promotions; a 96k stream
-        // recovering to 320k or a downgrade must still go through.
-        if (misc.hiResStart == HiResStart.NEVER &&
+        // Only "Fast start" upgrades to lossless mid-song: "Best quality first"
+        // already gave lossless its chance at 0:00, "Never upgrade" never does.
+        // Both still let a 96k stream recover to 320k, and a downgrade through.
+        if (misc.hiResStart != HiResStart.FAST &&
             requestedQuality >= LosslessMusicApi.QUALITY_CD_LOSSLESS &&
             streamQualityTier(currentStream) < requestedQuality
         ) return false
@@ -7351,6 +7454,27 @@ class MusicPlayer @Inject constructor(
                     return@launch
                 }
 
+                // Same recording means same length as what is actually playing.
+                // The search allows far more slack against catalogue metadata,
+                // which let an edit, an extended cut or a dub of equal title in.
+                // Not for a stream above the quality limit: leaving it is policy.
+                val playingDurationMs = withContext(Dispatchers.Main.immediate) {
+                    if (playerDelegate.isInitialized()) player.duration.takeIf { it > 0L } else null
+                }
+                val upgradedDurationMs = upgraded.durationMs?.takeIf { it > 0L }
+                if (!aboveLimit && playingDurationMs != null && upgradedDurationMs != null &&
+                    kotlin.math.abs(playingDurationMs - upgradedDurationMs) > HOT_SWAP_MAX_LENGTH_DRIFT_MS
+                ) {
+                    switchOutcome = "length-mismatch"
+                    android.util.Log.w(
+                        "MusicPlayer",
+                        "[STREAM UPGRADE] '${track.title}': candidate runs ${upgradedDurationMs}ms against " +
+                            "${playingDurationMs}ms playing; not the same recording, keeping the playing stream",
+                    )
+                    runCatching { preparedStreams.remove(upgraded.cacheKey) }
+                    return@launch
+                }
+
                 // A stream that just died leaves only its buffer to play. The
                 // offset probe takes about 3 s of it, and that made the swap
                 // miss; with this little left, line up on positions alone.
@@ -7363,6 +7487,11 @@ class MusicPlayer @Inject constructor(
                 // offset probe are independent. On a normal-memory device they
                 // run together; on a low-RAM device they stay sequential so the
                 // extra decoders cannot starve the live player.
+                fun logDifferentAudio(candidate: ResolvedStream) = android.util.Log.w(
+                    "MusicPlayer",
+                    "[STREAM UPGRADE] '${track.title}': ${candidate.audioCodec} candidate is different audio " +
+                        "(language, version or master); keeping the playing stream",
+                )
                 suspend fun validateAndMeasure(
                     candidate: ResolvedStream,
                     candidateDurationMs: Long?,
@@ -7415,8 +7544,13 @@ class MusicPlayer @Inject constructor(
                             if (runwayNow < HOT_SWAP_PROBE_MIN_RUNWAY_MS) return true to null
                         }
                         trace.markProbeStart()
-                        val measured = measureSwapLagMs(track, currentStream, candidate, currentPos, generation)
+                        val verdict = measureSwapLagMs(track, currentStream, candidate, currentPos, generation)
+                        val measured = (verdict as? SwapAlignmentVerdict.Same)?.match
                         trace.markProbeEnd(measured?.lagMs, measured?.confidence, cacheHit = false)
+                        if (!aboveLimit && verdict is SwapAlignmentVerdict.Different) {
+                            logDifferentAudio(candidate)
+                            return false to null
+                        }
                         measured?.let {
                             swapOffsetCache.put(key, it.lagMs, it.confidence)
                         }
@@ -7439,13 +7573,18 @@ class MusicPlayer @Inject constructor(
                         }
                         val ok = audition.await()
                         trace.markValidationEnd()
-                        val measured = if (ok) {
+                        val verdict = if (ok) {
                             probe.await()
                         } else {
                             probe.cancel()
-                            null
+                            SwapAlignmentVerdict.Unknown
                         }
+                        val measured = (verdict as? SwapAlignmentVerdict.Same)?.match
                         trace.markProbeEnd(measured?.lagMs, measured?.confidence, cacheHit = false)
+                        if (!aboveLimit && verdict is SwapAlignmentVerdict.Different) {
+                            logDifferentAudio(candidate)
+                            return@coroutineScope false to null
+                        }
                         measured?.let {
                             swapOffsetCache.put(key, it.lagMs, it.confidence)
                         }
@@ -7759,13 +7898,14 @@ class MusicPlayer @Inject constructor(
             }
     }
 
-    private data class SwapLagMeasurement(val lagMs: Long, val confidence: Double)
     private data class SwapLagChoice(val lagMs: Long, val confidence: Double?, val cacheHit: Boolean)
 
     /**
      * Measures how far apart the two masters are by decoding the same stretch of
-     * both on silent players at high speed. Null when it can't be measured
-     * (undecodable passthrough, silence, a different master, or a slow network).
+     * both on silent players at high speed. [SwapAlignmentVerdict.Different] when
+     * both had sound and it does not line up (another language, version or
+     * master); Unknown when it can't be measured (undecodable passthrough,
+     * silence, a slow network).
      */
     private suspend fun measureSwapLagMs(
         track: PlayableTrack,
@@ -7773,8 +7913,8 @@ class MusicPlayer @Inject constructor(
         candidate: ResolvedStream,
         positionMs: Long,
         generation: Long,
-    ): SwapLagMeasurement? {
-        if (outputIsSingleClient() || current.isExpired()) return null
+    ): SwapAlignmentVerdict {
+        if (outputIsSingleClient() || current.isExpired()) return SwapAlignmentVerdict.Unknown
         val captures = withContext(Dispatchers.Main) {
             preparedStreams[current.cacheKey] = current
             val currentProbe = SwapPcmProbe()
@@ -7807,11 +7947,9 @@ class MusicPlayer @Inject constructor(
             } finally {
                 players.forEach { (probePlayer, _) -> runCatching { probePlayer.release() } }
             }
-        } ?: return null
+        } ?: return SwapAlignmentVerdict.Unknown
         return withContext(Dispatchers.Default) {
-            SwapAlignment.measure(captures.first, captures.second)?.let {
-                SwapLagMeasurement(it.lagMs, it.confidence)
-            }
+            SwapAlignment.compare(captures.first, captures.second)
         }
     }
 
@@ -8768,8 +8906,6 @@ class MusicPlayer @Inject constructor(
     }
 
     companion object {
-        private const val EXCLUSIVE_DRIFT_ABORT_PPM = 20_000.0
-        private const val EXCLUSIVE_DRIFT_ABORT_TICKS = 2
         /**
          * Fallback target when the DAC descriptor lacks the source rate.
          * Resamples to a clock rate supported by the DAC (including 48kHz, 96kHz, etc.)
@@ -8834,14 +8970,7 @@ class MusicPlayer @Inject constructor(
         const val DISCOVER_QUEUE_REFILL_THRESHOLD = 8
         const val RADIO_QUEUE_BATCH_SIZE = 35
         const val RADIO_QUEUE_REFILL_THRESHOLD = 14
-        const val POSITION_PERSIST_INTERVAL_MS = 5_000L
-        const val MAX_PERSISTED_QUEUE_SIZE = 200
-        const val RESTORED_PREVIOUS_TRACKS = 50
         const val PLAYBACK_PREFERENCES_NAME = "lastwave_playback_session"
-        const val PLAYBACK_SESSION_KEY = "active_session"
-        /** Persisted Bit-Perfect volume session (survives process restarts). */
-        const val KEY_VOLUME_MANAGED = "bitperfect_volume_managed"
-        const val KEY_VOLUME_SAVED = "bitperfect_volume_saved"
         /** Ticker-driven session persistence cadence (explicit state changes persist immediately). */
         const val TICKER_PERSIST_INTERVAL_MS = 2_000L
         /** Collapsed-player cadence: the mini bar updates at 4 fps. */
@@ -8861,6 +8990,10 @@ class MusicPlayer @Inject constructor(
         const val MAX_PLAYBACK_RETRIES = 3
         const val STARTUP_PROVIDER_RESOLVE_MS = 8_000L
         const val STARTUP_PROVIDER_PROBE_MS = 1_000L
+        /** "Best quality first": how long the addon gets before YouTube plays. */
+        const val BEST_QUALITY_WAIT_MS = 5_000L
+        /** ...stretched to this, probe included, if the addon has found the song by then. */
+        const val BEST_QUALITY_RESOLVING_WAIT_MS = 8_000L
         const val STARTUP_PROBE_BYTES = 16 * 1024L
         /** Fallback resolve kept alive after a provider wins, for instant failover. */
         const val STARTUP_FALLBACK_KEEPALIVE_MS = 15_000L
@@ -8873,6 +9006,8 @@ class MusicPlayer @Inject constructor(
             "Accept-Encoding" to "identity",
         )
         const val LOSSLESS_BACKGROUND_BUDGET_MS = 30_000L
+        /** Largest runtime gap between the playing stream and a mid-song swap candidate. */
+        const val HOT_SWAP_MAX_LENGTH_DRIFT_MS = 3_000L
         const val HOT_SWAP_PROBE_SPEED = 4f
         const val HOT_SWAP_PROBE_TIMEOUT_MS = 8_000L
         const val HOT_SWAP_READY_TIMEOUT_MS = 6_000L
@@ -8938,21 +9073,6 @@ class MusicPlayer @Inject constructor(
         const val TAIL_PIN_TIMEOUT_MS = 5_000L
         /** Debounce so STATE_ENDED + ticker watchdog can't churn generations. */
         const val AUTO_ADVANCE_DEBOUNCE_MS = 3_000L
-        /** Buffered lead kept for the crossfade standby: the next track is
-         *  resolved and prepared this far ahead of the fade window, so the
-         *  hand-off only ever has to wait for STATE_READY. */
-        const val CROSSFADE_ARM_LEAD_MS = 10_000L
-        /** Extra headroom on top of [CROSSFADE_ARM_LEAD_MS] for re-requesting a
-         *  next-track stream whose signed URL is dead or inside the expiry
-         *  margin. Provider modules / addons mint short-TTL FLAC URLs, so a
-         *  resolve started at track start reads expired by the time the window
-         *  opens; re-requesting at the window edge left no time to prepare and
-         *  turned every such fade into a hard cut. */
-        const val CROSSFADE_PREP_REFRESH_LEAD_MS = 30_000L
-        /** Rate limit for the per-tick crossfade decision log. */
-        const val CROSSFADE_LOG_THROTTLE_MS = 5_000L
-        /** Minimum gap between next-track resolve kicks for the same item. */
-        const val CROSSFADE_RESOLVE_RETRY_MS = 8_000L
         /** Poll cadence used while the downloader yields to an armed standby. */
         const val CURRENT_TRACK_CACHE_STANDBY_YIELD_MS = 500L
         /** UI-playing but ExoPlayer frozen (pos + buffer) this long means a
@@ -8965,12 +9085,14 @@ class MusicPlayer @Inject constructor(
          *  second or two). User-muted-to-zero still counts as active, so
          *  this never fires on a deliberately silent phone. */
         const val INAUDIBLE_TIMEOUT_MS = 10_000L
+        const val MUSIC_ACTIVE_CHECK_INTERVAL_MS = 1_000L
         /** Renderer-reset, then re-resolve. Beyond that the error/unavailable
          *  machinery owns the window â€” never loop recovery forever. */
         const val MAX_SILENT_RECOVERIES = 2
         const val PLAYBACK_RETRY_BASE_DELAY_MS = 350L
         const val PLAYBACK_RETRY_JITTER_MS = 250L
         const val NEXT_TRACK_PREFETCH_BYTES = 128L * 1024
+        const val NEXT_TRACK_PREFETCH_SEGMENTS = 3L
         const val NEXT_TRACK_PREFETCH_DELAY_MS = 500L
         /** Delayed start keeps current-track caching off the startup path. */
         const val CURRENT_TRACK_CACHE_START_DELAY_MS = 6_000L
