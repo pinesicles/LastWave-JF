@@ -145,6 +145,7 @@ fun JellyfinFeedHome(
         },
         content = { inset ->
             CompositionLocalProvider(LocalTopInset provides inset) {
+                com.lastwave.app.ui.library.ProvideTrackDownloads {
                 when {
                     searching -> JellySearchResults(
                         (sessionState as? LibrarySession.SignedIn)?.session, search, libraryViewModel,
@@ -157,6 +158,7 @@ fun JellyfinFeedHome(
                         viewModel = libraryViewModel,
                     )
                 }
+                }
             }
         },
     )
@@ -168,6 +170,7 @@ private fun FeedSections(feedViewModel: JellyfinFeedViewModel, libraryViewModel:
     val player = LocalMusicPlayer.current
     val scope = rememberCoroutineScope()
     val session = state.session
+    com.lastwave.app.ui.library.CollectionActionsHost(libraryViewModel, canAddToPlaylist = false)
 
     when {
         !state.sessionLoaded -> CenteredProgress()
@@ -230,8 +233,14 @@ private fun FeedSections(feedViewModel: JellyfinFeedViewModel, libraryViewModel:
                     Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CenteredProgressInline() }
                 }
             } else {
+                items(state.shelves.filter { it.order < 50 }, key = { it.key }) { shelf ->
+                    AlbumShelf(shelf.title, shelf.items, feedViewModel, session, libraryViewModel, round = shelf.artists)
+                }
                 item(key = "recent") {
                     AlbumShelf("Recently added", state.recentlyAdded, feedViewModel, session, libraryViewModel)
+                }
+                items(state.shelves.filter { it.order >= 50 }, key = { it.key }) { shelf ->
+                    AlbumShelf(shelf.title, shelf.items, feedViewModel, session, libraryViewModel, round = shelf.artists)
                 }
                 item(key = "random") {
                     AlbumShelf("Random picks", state.randomPicks, feedViewModel, session, libraryViewModel)
@@ -253,6 +262,7 @@ private fun AlbumShelf(
     feedViewModel: JellyfinFeedViewModel,
     session: com.lastwave.app.data.jellyfin.JellyfinSession,
     libraryViewModel: LibraryViewModel,
+    round: Boolean = false,
 ) {
     if (albums.isEmpty()) return
     Column {
@@ -268,10 +278,15 @@ private fun AlbumShelf(
             items(albums, key = { it.id }) { album ->
                 CoverCard(
                     title = album.name.orEmpty(),
-                    subtitle = album.albumArtist,
+                    subtitle = if (round) null else album.albumArtist,
                     coverUrl = feedViewModel.coverUrl(session, album),
-                    round = false,
-                    onClick = { libraryViewModel.open(LibraryDetail.Album(album)) },
+                    round = round,
+                    onClick = {
+                        libraryViewModel.open(if (round) LibraryDetail.Artist(album) else LibraryDetail.Album(album))
+                    },
+                    onLongClick = {
+                        libraryViewModel.showActions(if (round) LibraryDetail.Artist(album) else LibraryDetail.Album(album))
+                    },
                     modifier = Modifier.width(150.dp),
                 )
             }

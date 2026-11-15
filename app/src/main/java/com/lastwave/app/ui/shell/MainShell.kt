@@ -293,6 +293,13 @@ fun MainShell(
 
     Box(Modifier.fillMaxSize()) {
         val feedIndex = tabs.indexOf(MainTab.FEED)
+        // The header Downloads icon opens the Downloaded tab of the Library instead of the YouTube downloads screen.
+        val savedLibrary: com.lastwave.app.ui.library.LibraryViewModel = hiltViewModel(key = "library-SAVED")
+        val openJellyDownloads: () -> Unit = {
+            savedLibrary.start(com.lastwave.app.ui.library.LibraryMode.SAVED)
+            savedLibrary.selectTab(com.lastwave.app.ui.library.LibraryTab.DOWNLOADED)
+            scope.launch { pagerState.animateScrollToPage(tabs.indexOf(MainTab.PLAYLISTS)) }
+        }
         HorizontalPager(
             state = pagerState,
             // Keep every tab composed. With 1, jumping Playlists -> Home
@@ -324,7 +331,7 @@ fun MainShell(
                         MainTab.FEED -> com.lastwave.app.ui.feed.JellyfinFeedHome(
                             active = isCurrent,
                             onOpenSettings = onOpenSettings,
-                            onOpenDownloads = onOpenDownloads,
+                            onOpenDownloads = openJellyDownloads,
                         )
                         MainTab.STATS -> HomeScreen(
                             onOpenSettings = onOpenSettings,
@@ -340,7 +347,7 @@ fun MainShell(
                             onOpenFeedPlaylist = onOpenFeedPlaylist,
                             onOpenGenerator = onOpenGenerator,
                             onOpenSettings = onOpenSettings,
-                            onOpenDownloads = onOpenDownloads,
+                            onOpenDownloads = openJellyDownloads,
                         )
                     }
                 }

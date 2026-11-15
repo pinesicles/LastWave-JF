@@ -34,6 +34,8 @@ data class JfTrackEntity(
     val sizeBytes: Long,
     val state: Int,
     val error: String? = null,
+    /** 0 = the original file; otherwise this song is fetched as an MP3 transcode at this bitrate. */
+    val transcodeKbps: Int = 0,
 )
 
 /** A downloaded album or playlist. [type] is "album" or "playlist". */
@@ -80,6 +82,9 @@ abstract class JellyDownloadDao {
             "WHERE c.collectionId = :id ORDER BY c.position",
     )
     abstract suspend fun tracksOf(id: String): List<JfTrackEntity>
+
+    @Query("SELECT itemId FROM jf_collection_tracks WHERE collectionId = :id")
+    abstract fun trackIds(id: String): Flow<List<String>>
 
     @Query("SELECT * FROM jf_tracks WHERE state = 0 ORDER BY itemId")
     abstract suspend fun pending(): List<JfTrackEntity>
@@ -151,5 +156,11 @@ val MIGRATION_15_16 = object : Migration(15, 16) {
                 "`position` INTEGER NOT NULL, `itemId` TEXT NOT NULL, PRIMARY KEY(`collectionId`, `position`))",
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_jf_collection_tracks_itemId` ON `jf_collection_tracks` (`itemId`)")
+    }
+}
+
+val MIGRATION_16_17 = object : Migration(16, 17) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `jf_tracks` ADD COLUMN `transcodeKbps` INTEGER NOT NULL DEFAULT 0")
     }
 }

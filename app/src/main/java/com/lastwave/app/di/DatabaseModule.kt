@@ -336,6 +336,7 @@ object DatabaseModule {
                 migration13To14,
                 migration14To15,
                 com.lastwave.app.data.jellyfin.download.MIGRATION_15_16,
+                com.lastwave.app.data.jellyfin.download.MIGRATION_16_17,
             )
             .build()
 

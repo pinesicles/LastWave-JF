@@ -503,12 +503,8 @@ fun LastWaveNavHost(
 
         composable(Screen.YouTubeImport.route) { backStackEntry ->
             PredictiveBackScreen(onBack = { navController.safePopBackStack(backStackEntry) }) {
-                com.lastwave.app.ui.settings.YouTubePlaylistImportScreen(
-                    onBack = { navController.safePopBackStack(backStackEntry) },
-                    onImportSuccess = {
-                        navController.safePopBackStack(backStackEntry)
-                    },
-                )
+                // JellyWave: playlist import goes to the Jellyfin importer, not YouTube Music.
+                com.lastwave.app.ui.library.JellyImportRoute(onClose = { navController.safePopBackStack(backStackEntry) })
             }
         }
 
@@ -523,15 +519,7 @@ fun LastWaveNavHost(
 
         composable(Screen.ExternalPlaylistImport.route) { backStackEntry ->
             PredictiveBackScreen(onBack = { navController.safePopBackStack(backStackEntry) }) {
-                com.lastwave.app.ui.settings.ExternalPlaylistImportScreen(
-                    onBack = { navController.safePopBackStack(backStackEntry) },
-                    onImportSuccess = {
-                        navController.safePopBackStack(backStackEntry)
-                    },
-                    onOpenSpotifyLogin = {
-                        navController.navigate(Screen.SpotifyLogin.route)
-                    },
-                )
+                com.lastwave.app.ui.library.JellyImportRoute(onClose = { navController.safePopBackStack(backStackEntry) })
             }
         }
 

@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Add
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import com.lastwave.app.ui.common.HeaderActionIcon
@@ -68,6 +69,11 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.rounded.MyLocation
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
@@ -89,6 +95,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -153,6 +160,13 @@ fun LibraryScreen(
         pickerTracks = tracks
     }
 
+    var showImport by rememberSaveable { mutableStateOf(false) }
+    if (showImport) {
+        JellyImportDialog(hiltViewModel()) { created ->
+            showImport = false
+            if (created) viewModel.refreshPlaylists()
+        }
+    }
     pickerTracks?.let { tracks ->
         PlaylistPickerDialog(
             viewModel = viewModel,
@@ -172,6 +186,8 @@ fun LibraryScreen(
     }
 
     CompositionLocalProvider(LocalJellyAddToPlaylist provides openPicker) {
+    ProvideTrackDownloads {
+    CollectionActionsHost(viewModel, canAddToPlaylist = true)
     Box(Modifier.fillMaxSize()) {
         when {
             sessionState is LibrarySession.Loading -> CenteredProgress()
@@ -181,8 +197,10 @@ fun LibraryScreen(
             else -> LibraryPage(
                 viewModel, tab, signedIn, onOpenPlaylist, onOpenFeedPlaylist, onOpenGenerator,
                 onOpenSettings, onOpenDownloads, onCreatePlaylist = { createWith = emptyList() },
+                onImportPlaylist = { showImport = true },
             )
         }
+    }
     }
     }
 }
@@ -202,6 +220,7 @@ private fun LibraryPage(
     onOpenSettings: () -> Unit,
     onOpenDownloads: () -> Unit,
     onCreatePlaylist: () -> Unit,
+    onImportPlaylist: () -> Unit,
 ) {
     val tabs by viewModel.tabs.collectAsStateWithLifecycle()
     val mode by viewModel.mode.collectAsStateWithLifecycle()
@@ -222,7 +241,20 @@ private fun LibraryPage(
                         HeaderActionIcon(Icons.Filled.Close, "Close search", closeSearch)
                     } else {
                         if (mode == LibraryMode.SAVED && tab == LibraryTab.PLAYLISTS) {
-                            HeaderActionIcon(Icons.Filled.Add, "New playlist", onCreatePlaylist)
+                            var addMenu by remember { mutableStateOf(false) }
+                            Box {
+                                HeaderActionIcon(Icons.Filled.Add, "New or import playlist") { addMenu = true }
+                                androidx.compose.material3.DropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("New playlist") },
+                                        onClick = { addMenu = false; onCreatePlaylist() },
+                                    )
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Import playlist") },
+                                        onClick = { addMenu = false; onImportPlaylist() },
+                                    )
+                                }
+                            }
                         }
                         JellyHeaderActions(
                             onRefresh = { if (tab != LibraryTab.PHONE) viewModel.refresh() },
@@ -365,16 +397,8 @@ private fun JellyfinTabContent(session: JellyfinSession, tab: LibraryTab, viewMo
 private fun DownloadedGrid(session: JellyfinSession, viewModel: LibraryViewModel) {
     val collections by viewModel.downloadedCollections.collectAsStateWithLifecycle()
     val progress by viewModel.downloadProgress.collectAsStateWithLifecycle()
-    if (collections.isEmpty()) {
-        Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
-            Text(
-                "Nothing downloaded yet. Open an album or playlist and tap the download button.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-        }
-        return
-    }
+    val wifiOnly by viewModel.wifiOnly.collectAsStateWithLifecycle()
+    val pins by viewModel.pins.collectAsStateWithLifecycle()
     LazyVerticalGrid(
         columns = GridCells.Adaptive(150.dp),
         contentPadding = PaddingValues(
@@ -385,7 +409,26 @@ private fun DownloadedGrid(session: JellyfinSession, viewModel: LibraryViewModel
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        items(collections, key = { it.id }) { c ->
+        item(key = "wifi", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Download on Wi-Fi only", modifier = Modifier.weight(1f))
+                androidx.compose.material3.Switch(checked = wifiOnly, onCheckedChange = viewModel::setWifiOnly)
+            }
+        }
+        if (collections.isEmpty()) {
+            item(key = "empty", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                Text(
+                    "Nothing downloaded yet. Open an album or playlist and tap the download button.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(32.dp),
+                )
+            }
+        }
+        items(collections.sortedBy { if (it.id in pins) 0 else 1 }, key = { it.id }) { c ->
             val p = progress[c.id]
             val item = JfItem(id = c.id, name = c.name, albumArtist = c.subtitle)
             CoverCard(
@@ -395,10 +438,15 @@ private fun DownloadedGrid(session: JellyfinSession, viewModel: LibraryViewModel
                 coverUrl = viewModel.coverUrl(session, item),
                 round = false,
                 onClick = {
-                    viewModel.open(
+                    viewModel.openFromDownloads(
                         if (c.type == COLLECTION_ALBUM) LibraryDetail.Album(item) else LibraryDetail.Playlist(item),
+                        c.id,
                     )
                 },
+                onLongClick = {
+                    viewModel.showActions(if (c.type == COLLECTION_ALBUM) LibraryDetail.Album(item) else LibraryDetail.Playlist(item))
+                },
+                pinned = c.id in pins,
             )
         }
     }
@@ -406,6 +454,7 @@ private fun DownloadedGrid(session: JellyfinSession, viewModel: LibraryViewModel
 
 @Composable
 private fun PlaylistsGrid(session: JellyfinSession, state: ListState, viewModel: LibraryViewModel) {
+    val pins by viewModel.pins.collectAsStateWithLifecycle()
     LazyVerticalGrid(
         columns = GridCells.Adaptive(150.dp),
         contentPadding = PaddingValues(
@@ -420,13 +469,16 @@ private fun PlaylistsGrid(session: JellyfinSession, state: ListState, viewModel:
         item(key = "liked-songs") {
             LikedSongsCard(onClick = { viewModel.open(LibraryDetail.LikedSongs()) })
         }
-        items(state.items, key = { it.id }) { item ->
+        val ordered = state.items.sortedBy { if (it.id in pins) 0 else 1 }
+        items(ordered, key = { it.id }) { item ->
             CoverCard(
                 title = item.name.orEmpty(),
                 subtitle = item.childCount?.let { "$it songs" },
                 coverUrl = viewModel.coverUrl(session, item),
                 round = false,
                 onClick = { viewModel.open(LibraryDetail.Playlist(item)) },
+                onLongClick = { viewModel.showActions(LibraryDetail.Playlist(item)) },
+                pinned = item.id in pins,
             )
         }
         if (state.loading) {
@@ -490,6 +542,7 @@ internal fun CoverGrid(
     subtitleOf: (JfItem) -> String?,
 ) {
     val gridState = rememberLazyGridState()
+    val pins by viewModel.pins.collectAsStateWithLifecycle()
     GridLoadMoreEffect(gridState, state.items.size, state.hasMore && !state.loading && state.error == null, onLoadMore)
 
     if (state.items.isEmpty()) {
@@ -514,13 +567,16 @@ internal fun CoverGrid(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        items(state.items, key = { it.id }) { item ->
+        val ordered = state.items.sortedBy { if (it.id in pins) 0 else 1 }
+        items(ordered, key = { it.id }) { item ->
             CoverCard(
                 title = item.name.orEmpty(),
                 subtitle = subtitleOf(item),
                 coverUrl = viewModel.coverUrl(session, item),
                 round = round,
                 onClick = { onClick(item) },
+                onLongClick = { viewModel.showActions(if (round) LibraryDetail.Artist(item) else LibraryDetail.Album(item)) },
+                pinned = item.id in pins,
             )
         }
         if (state.loading) {
@@ -566,6 +622,7 @@ internal fun ErrorWithRetry(message: String, onRetry: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun CoverCard(
     title: String,
@@ -574,18 +631,39 @@ internal fun CoverCard(
     round: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    pinned: Boolean = false,
 ) {
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     Column(
         modifier
             .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick?.let { long ->
+                    {
+                        haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                        long()
+                    }
+                },
+            )
             .padding(4.dp),
     ) {
-        CoverImage(
-            url = coverUrl,
-            shape = if (round) CircleShape else RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
-        )
+        Box {
+            CoverImage(
+                url = coverUrl,
+                shape = if (round) CircleShape else RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+            )
+            if (pinned) {
+                Icon(
+                    Icons.Filled.PushPin,
+                    contentDescription = "Pinned",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(18.dp),
+                )
+            }
+        }
         Spacer(Modifier.height(6.dp))
         Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (!subtitle.isNullOrBlank()) {
@@ -683,6 +761,9 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
     val addToPlaylist = LocalJellyAddToPlaylist.current
     val tracksNow by viewModel.detailTracks.collectAsStateWithLifecycle()
     var menuOpen by remember { mutableStateOf(false) }
+    var searching by rememberSaveable(item.id) { mutableStateOf(false) }
+    var query by rememberSaveable(item.id) { mutableStateOf("") }
+    BackHandler(enabled = searching) { searching = false; query = "" }
     var renaming by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
@@ -704,12 +785,23 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
     val headerActions: (@Composable () -> Unit)? =
         if (detail is LibraryDetail.Album || detail is LibraryDetail.Playlist) {
             @Composable {
-                DetailActionButtons(
-                    favourite = isFavourite,
-                    onFavourite = { viewModel.toggleFavourite(item) },
+                HeaderActionIcon(
+                    if (isFavourite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                    if (isFavourite) "Remove from saved" else "Save",
+                ) { viewModel.toggleFavourite(item) }
+            }
+        } else null
+    val downloadSlot: (@Composable () -> Unit)? =
+        if (detail is LibraryDetail.Album || detail is LibraryDetail.Playlist) {
+            @Composable {
+                CollectionDownloadStatus(
+                    itemId = item.id,
                     downloaded = collection != null,
-                    downloadFraction = progress?.takeIf { it.done < it.total }?.let { it.done.toFloat() / it.total.coerceAtLeast(1) },
-                    onDownload = {
+                    done = progress?.done ?: 0,
+                    total = progress?.total ?: 0,
+                    failed = progress?.failed ?: 0,
+                    viewModel = viewModel,
+                    onClick = {
                         // Tapping again retries failed songs; otherwise offers to remove the download.
                         if (collection == null || (progress?.failed ?: 0) > 0) viewModel.downloadCollection(item, collectionType)
                         else confirmRemoveDownload = true
@@ -767,13 +859,43 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
         )
     }
 
-    Column(modifier) {
+    val cover = rememberCoverColors(viewModel.coverUrl(session, item, 600))
+    val pageBackground = MaterialTheme.colorScheme.background
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalCoverColors provides cover,
+        androidx.compose.material3.LocalContentColor provides (cover?.onColor ?: androidx.compose.material3.LocalContentColor.current),
+    ) {
+    Column(
+        modifier.then(
+            if (cover != null) {
+                Modifier.background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        colorStops = arrayOf(0f to cover.top, 0.55f to pageBackground, 1f to pageBackground),
+                    ),
+                )
+            } else Modifier,
+        ),
+    ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { viewModel.back() }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
             }
-            Spacer(Modifier.weight(1f))
+            // The search bar grows leftwards out of the search icon.
+            Box(Modifier.weight(1f).padding(horizontal = 4.dp), contentAlignment = Alignment.CenterEnd) {
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = searching,
+                    enter = androidx.compose.animation.expandHorizontally(expandFrom = Alignment.End) + androidx.compose.animation.fadeIn(),
+                    exit = androidx.compose.animation.shrinkHorizontally(shrinkTowards = Alignment.End) + androidx.compose.animation.fadeOut(),
+                ) {
+                    PlaylistSearchField(query, { query = it }, onClose = { searching = false; query = "" })
+                }
+            }
             if (editing) TextButton(onClick = { editing = false }) { Text("Done") }
+            if (!searching && (detail is LibraryDetail.Playlist || detail is LibraryDetail.Album || detail is LibraryDetail.LikedSongs)) {
+                IconButton(onClick = { searching = true }) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search this list")
+                }
+            }
             if (canFavourite) {
                 IconButton(onClick = { viewModel.toggleFavourite(item) }) {
                     Icon(
@@ -851,6 +973,8 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                     emptyText = if (detail is LibraryDetail.LikedSongs) "Heart a song to see it here" else "No songs here",
                     onRetry = viewModel::reloadDetail,
                     trailing = editTrailing,
+                    query = query,
+                    downloadSlot = downloadSlot,
                     rowActions = { index, track ->
                         buildList {
                             add(RowAction("Add to playlist") { addToPlaylist(listOf(track)) })
@@ -874,12 +998,15 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                             subtitle = subtitle,
                             coverUrl = viewModel.coverUrl(session, item, 600),
                             heart = detail is LibraryDetail.LikedSongs,
+                            hero = detail !is LibraryDetail.Album,
+                            caption = if (detail is LibraryDetail.Album || detail is LibraryDetail.Playlist) songCountCaption(tracksState.tracks) else null,
                             actions = headerActions,
                         )
                     },
                 )
             }
         }
+    }
     }
 }
 
@@ -915,6 +1042,7 @@ private fun ArtistAlbums(session: JellyfinSession, detail: LibraryDetail.Artist,
                         coverUrl = viewModel.coverUrl(session, album),
                         round = false,
                         onClick = { viewModel.open(LibraryDetail.Album(album)) },
+                        onLongClick = { viewModel.showActions(LibraryDetail.Album(album)) },
                     )
                 }
             }
@@ -929,49 +1057,122 @@ private fun DetailHeader(
     coverUrl: String?,
     round: Boolean = false,
     heart: Boolean = false,
+    caption: String? = null,
+    /** Playlists get a large centred cover; albums keep the compact side-by-side layout. */
+    hero: Boolean = false,
     actions: (@Composable () -> Unit)? = null,
 ) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
+    val cc = LocalCoverColors.current
+    val titleColor = cc?.onColor ?: MaterialTheme.colorScheme.onSurface
+    val subColor = cc?.onVariant ?: MaterialTheme.colorScheme.onSurfaceVariant
+    val size = if (hero) 200.dp else 112.dp
+
+    @Composable
+    fun Cover() {
         if (heart) {
             Box(
-                Modifier
-                    .size(112.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer),
+                Modifier.size(size).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     Icons.Filled.Favorite,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(48.dp),
+                    modifier = Modifier.size(if (hero) 80.dp else 48.dp),
                 )
             }
         } else {
             CoverImage(
                 url = coverUrl,
-                shape = if (round) CircleShape else RoundedCornerShape(16.dp),
-                modifier = Modifier.size(112.dp),
+                shape = if (round) CircleShape else RoundedCornerShape(if (hero) 20.dp else 16.dp),
+                modifier = Modifier.size(size),
             )
         }
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
+    }
+
+    if (hero) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Cover()
+            Spacer(Modifier.height(16.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = titleColor,
+                textAlign = TextAlign.Center,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
             if (subtitle.isNotBlank()) {
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = subColor, textAlign = TextAlign.Center)
+            }
+            if (caption != null) {
+                Text(caption, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = subColor)
             }
             if (actions != null) {
                 Spacer(Modifier.height(10.dp))
                 actions()
             }
         }
+        return
+    }
+
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Cover()
+            if (caption != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(caption, style = MaterialTheme.typography.labelMedium, color = subColor)
+            }
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleLarge, color = titleColor, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            if (subtitle.isNotBlank()) {
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = subColor)
+            }
+            if (actions != null) {
+                Spacer(Modifier.height(10.dp))
+                actions()
+            }
+        }
+    }
+}
+
+/** Pill-shaped search box used inside an album/playlist; focuses itself when it appears. */
+@Composable
+private fun PlaylistSearchField(query: String, onQuery: (String) -> Unit, onClose: () -> Unit) {
+    val focus = androidx.compose.runtime.remember { androidx.compose.ui.focus.FocusRequester() }
+    androidx.compose.runtime.LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.85f))
+            .padding(start = 16.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.weight(1f)) {
+            if (query.isEmpty()) {
+                Text("Search this list", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
+            }
+            androidx.compose.foundation.text.BasicTextField(
+                value = query,
+                onValueChange = onQuery,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus),
+            )
+        }
+        IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close search") }
     }
 }
 
@@ -986,11 +1187,27 @@ private fun TrackList(
     onRetry: () -> Unit,
     rowActions: (index: Int, track: PlayableTrack) -> List<RowAction>,
     trailing: (@Composable (Int) -> Unit)? = null,
+    downloadSlot: (@Composable () -> Unit)? = null,
+    query: String = "",
     header: (@Composable () -> Unit)?,
 ) {
     val player = LocalMusicPlayer.current
+    val chrome by player.chromeState.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    // Searching keeps each song's real position, so edit actions still hit the right entry.
+    val shown = remember(state.tracks, query) {
+        val q = query.trim()
+        if (q.isEmpty()) state.tracks.withIndex().toList()
+        else state.tracks.withIndex().filter { (_, t) ->
+            t.title.contains(q, true) || t.artist.contains(q, true) || (t.album?.contains(q, true) == true)
+        }
+    }
+    val shownTracks = remember(shown) { shown.map { it.value } }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = FloatingNavDefaults.contentBottomPadding()),
     ) {
@@ -998,26 +1215,42 @@ private fun TrackList(
 
         if (state.tracks.isNotEmpty()) {
             item(key = "actions") {
+                // Same action row as the original playlist screen: shuffle, play, locate; download on the right.
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    androidx.compose.material3.FilledTonalIconButton(
+                        onClick = { player.playQueue(state.tracks, state.tracks.indices.random(), sourceLabel, startShuffled = true) },
+                        shape = CircleShape,
+                        modifier = Modifier.size(50.dp),
+                    ) { Icon(Icons.Filled.Shuffle, contentDescription = "Shuffle", modifier = Modifier.size(22.dp)) }
                     Button(
                         onClick = { player.playQueue(state.tracks, 0, sourceLabel, startShuffled = false) },
-                        shape = ExpressivePillShape,
-                        modifier = Modifier.weight(1f),
+                        shape = CircleShape,
+                        modifier = Modifier.height(50.dp),
                     ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.padding(end = 6.dp))
-                        Text("Play")
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(26.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Play", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     }
-                    OutlinedButton(
-                        onClick = { player.playQueue(state.tracks, 0, sourceLabel, startShuffled = true) },
-                        shape = ExpressivePillShape,
-                        modifier = Modifier.weight(1f),
+                    androidx.compose.material3.FilledTonalIconButton(
+                        onClick = {
+                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.ContextClick)
+                            val playing = chrome.current?.internalTrackId
+                            val at = shown.indexOfFirst { it.value.internalTrackId == playing }
+                            if (playing != null && at >= 0) {
+                                scope.launch { listState.animateScrollToItem(at + (if (header != null) 1 else 0) + 1) }
+                            }
+                        },
+                        shape = CircleShape,
+                        modifier = Modifier.size(50.dp),
                     ) {
-                        Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.padding(end = 6.dp))
-                        Text("Shuffle")
+                        Icon(Icons.Rounded.MyLocation, contentDescription = "Locate current song", modifier = Modifier.size(22.dp))
                     }
+                    Spacer(Modifier.weight(1f))
+                    downloadSlot?.invoke()
                 }
             }
         }
@@ -1038,15 +1271,20 @@ private fun TrackList(
                     Text(emptyText, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            else -> itemsIndexed(state.tracks, key = { index, track -> "${index}_${track.internalTrackId}" }) { index, track ->
+            shown.isEmpty() -> item(key = "no-match") {
+                Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Text("No songs match \u201c${query.trim()}\u201d", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            else -> itemsIndexed(shown, key = { _, iv -> "${iv.index}_${iv.value.internalTrackId}" }) { pos, iv ->
                 JellyTrackRow(
-                    track,
-                    groupPositionFor(index, state.tracks.size),
-                    number = if (showNumbers) track.trackNumber else null,
-                    actions = rowActions(index, track),
-                    trailing = if (trailing != null) { @Composable { trailing(index) } } else null,
+                    iv.value,
+                    groupPositionFor(pos, shown.size),
+                    number = if (showNumbers) iv.value.trackNumber else null,
+                    actions = rowActions(iv.index, iv.value),
+                    trailing = if (trailing != null) { @Composable { trailing(iv.index) } } else null,
                 ) {
-                    player.playQueue(state.tracks, index, sourceLabel, startShuffled = false)
+                    player.playQueue(shownTracks, pos, sourceLabel, startShuffled = false)
                 }
             }
         }

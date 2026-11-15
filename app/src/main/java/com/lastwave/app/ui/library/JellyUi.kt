@@ -1,6 +1,7 @@
 package com.lastwave.app.ui.library
 
 import com.lastwave.app.ui.common.TrackMiniTrayData
+import com.lastwave.app.data.jellyfin.jellyfinItemIdOrNull
 import com.lastwave.app.ui.common.TrackMiniTraySheet
 import com.lastwave.app.ui.common.MiniTrayCustomRow
 import com.lastwave.app.ui.common.HeaderActionIcon
@@ -177,6 +178,8 @@ internal fun JellyTrackRow(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                Spacer(Modifier.width(6.dp))
+                TrackDownloadIndicator(track.jellyfinItemIdOrNull())
                 track.durationMs?.let { ms ->
                     Spacer(Modifier.width(8.dp))
                     Text(
@@ -364,6 +367,7 @@ private fun Shelf(
                 coverUrl = viewModel.coverUrl(session, item),
                 round = round,
                 onClick = { onClick(item) },
+                onLongClick = { viewModel.showActions(if (round) LibraryDetail.Artist(item) else LibraryDetail.Album(item)) },
                 modifier = Modifier.width(140.dp),
             )
         }

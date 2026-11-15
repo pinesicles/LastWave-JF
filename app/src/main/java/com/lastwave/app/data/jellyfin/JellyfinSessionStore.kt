@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
@@ -35,6 +36,10 @@ class JellyfinSessionStore @Inject constructor(
 
         /** 0 = original file (no transcoding); otherwise a max stream bitrate in kbps. */
         val STREAM_KBPS = intPreferencesKey("jf_stream_kbps")
+        val WIFI_ONLY = booleanPreferencesKey("jf_wifi_only")
+        val AUTO_QUALITY = booleanPreferencesKey("jf_auto_quality")
+        /** 0 = download the original file; otherwise transcode to this bitrate (kbps). */
+        val DOWNLOAD_KBPS = intPreferencesKey("jf_download_kbps")
     }
 
     private val data: Flow<Preferences> = dataStore.data.catch { e ->
@@ -62,6 +67,28 @@ class JellyfinSessionStore @Inject constructor(
     }.distinctUntilChanged()
 
     val streamKbps: Flow<Int> = data.map { it[Keys.STREAM_KBPS] ?: 0 }.distinctUntilChanged()
+
+    /** Download only on unmetered networks (Wi-Fi). */
+    val wifiOnly: Flow<Boolean> = data.map { it[Keys.WIFI_ONLY] ?: false }.distinctUntilChanged()
+
+    suspend fun currentWifiOnly(): Boolean = wifiOnly.first()
+
+    /** Pick the streaming quality automatically from the network and the audio output. */
+    val autoQuality: Flow<Boolean> = data.map { it[Keys.AUTO_QUALITY] ?: false }.distinctUntilChanged()
+    suspend fun currentAutoQuality(): Boolean = autoQuality.first()
+    suspend fun setAutoQuality(on: Boolean) {
+        dataStore.edit { it[Keys.AUTO_QUALITY] = on }
+    }
+
+    val downloadKbps: Flow<Int> = data.map { it[Keys.DOWNLOAD_KBPS] ?: 0 }.distinctUntilChanged()
+    suspend fun currentDownloadKbps(): Int = downloadKbps.first()
+    suspend fun setDownloadKbps(kbps: Int) {
+        dataStore.edit { it[Keys.DOWNLOAD_KBPS] = kbps.coerceAtLeast(0) }
+    }
+
+    suspend fun setWifiOnly(on: Boolean) {
+        dataStore.edit { it[Keys.WIFI_ONLY] = on }
+    }
 
     suspend fun current(): JellyfinSession? = session.first()
 

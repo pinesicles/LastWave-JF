@@ -346,6 +346,7 @@ class PlayerViewModel @Inject constructor(
     val player: MusicPlayer,
     private val playlistRepository: PlaylistRepository,
     private val lyricsRepository: LyricsRepository,
+    private val jellyLyrics: com.lastwave.app.data.jellyfin.JellyLyrics,
     private val canvasRepository: com.lastwave.app.data.canvas.CanvasRepository,
     private val settingsPreferences: com.lastwave.app.data.local.SettingsPreferences,
     val navigator: com.lastwave.app.ui.navigation.ArtistAlbumNavigator,
@@ -707,7 +708,8 @@ class PlayerViewModel @Inject constructor(
                 val result = try {
                     val resolvedLocalUrl = com.lastwave.app.data.generate.LocalAudioFormats
                         .importedPathOrNull(track.playbackUrl)
-                    val resolvedLrc = resolvedLocalUrl?.let { localMusicLibrary.lrcUriFor(it) }
+                    val resolvedLrc = jellyLyrics.pathFor(track)
+                        ?: resolvedLocalUrl?.let { localMusicLibrary.lrcUriFor(it) }
                         ?: resolvedLocalUrl?.let(com.lastwave.app.data.generate.LocalAudioFormats::lrcPathFor)
                     lyricsRepository.getLyrics(
                         title = track.title,

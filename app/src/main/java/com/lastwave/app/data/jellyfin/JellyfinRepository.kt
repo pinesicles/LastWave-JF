@@ -24,9 +24,14 @@ class JellyfinRepository @Inject constructor(
     private val api: JellyfinApi,
     private val store: JellyfinSessionStore,
     private val downloads: com.lastwave.app.data.jellyfin.download.JellyDownloads,
+    private val autoQuality: JellyAutoQuality,
 ) {
     val session = store.session
     val streamKbps = store.streamKbps
+
+    /** The streaming cap to use right now: automatic when that's switched on, otherwise your setting. */
+    private suspend fun effectiveKbps(): Int =
+        if (store.currentAutoQuality()) autoQuality.capKbps() else store.currentStreamKbps()
 
     suspend fun login(serverInput: String, username: String, password: String): JellyfinSession {
         val serverUrl = JellyfinApi.normalizeServerUrl(serverInput)
@@ -67,14 +72,14 @@ class JellyfinRepository @Inject constructor(
     /** One page of every song on the server, already mapped for the player. */
     suspend fun songsPage(startIndex: Int, limit: Int): Pair<List<PlayableTrack>, Int> {
         val s = requireSession()
-        val kbps = store.currentStreamKbps()
+        val kbps = effectiveKbps()
         val page = api.tracks(s, startIndex, limit)
         return page.items.map { toPlayable(s, it, kbps) } to page.total
     }
 
     suspend fun randomTracks(limit: Int = 100): List<PlayableTrack> {
         val s = requireSession()
-        val kbps = store.currentStreamKbps()
+        val kbps = effectiveKbps()
         return api.tracks(s, 0, limit, sortBy = "Random").items.map { toPlayable(s, it, kbps) }
     }
 
@@ -87,13 +92,13 @@ class JellyfinRepository @Inject constructor(
 
     suspend fun albumTracks(albumId: String): List<PlayableTrack> {
         val s = requireSession()
-        val kbps = store.currentStreamKbps()
+        val kbps = effectiveKbps()
         return api.albumTracks(s, albumId).items.map { toPlayable(s, it, kbps) }
     }
 
     suspend fun playlistTracks(playlistId: String): List<PlayableTrack> {
         val s = requireSession()
-        val kbps = store.currentStreamKbps()
+        val kbps = effectiveKbps()
         return api.playlistTracks(s, playlistId).items.map { toPlayable(s, it, kbps) }
     }
 
@@ -102,7 +107,7 @@ class JellyfinRepository @Inject constructor(
 
     suspend fun playlistEntries(playlistId: String): List<PlaylistEntry> {
         val s = requireSession()
-        val kbps = store.currentStreamKbps()
+        val kbps = effectiveKbps()
         return api.playlistTracks(s, playlistId).items.map { PlaylistEntry(toPlayable(s, it, kbps), it.playlistItemId) }
     }
 
@@ -123,9 +128,69 @@ class JellyfinRepository @Inject constructor(
 
     suspend fun deletePlaylist(playlistId: String) = api.deleteItem(requireSession(), playlistId)
 
+    suspend fun genreNames(): List<String> = api.genreNames(requireSession())
+
+    suspend fun albumsByGenres(genres: List<String>, limit: Int = 20): List<JfItem> =
+        api.albumsByGenres(requireSession(), genres, limit).items
+
+    suspend fun similarAlbums(id: String, limit: Int = 15): List<JfItem> = api.similar(requireSession(), "Albums", id, limit).items
+
+    suspend fun similarArtists(id: String, limit: Int = 15): List<JfItem> = api.similar(requireSession(), "Artists", id, limit).items
+
+    suspend fun favoriteAlbums(limit: Int = 30): List<JfItem> = api.albums(requireSession(), 0, limit, true).items
+
+    suspend fun favoriteArtists(limit: Int = 30): List<JfItem> = api.albumArtists(requireSession(), 0, limit, true).items
+
+    /** Finds the library artist with this exact (normalised) name, or null. */
+    suspend fun findArtist(name: String): JfItem? {
+        val n = com.lastwave.app.data.jellyfin.importer.ImportMatcher.norm(name)
+        return api.search(requireSession(), name, 20).items
+            .firstOrNull { it.type == "MusicArtist" && com.lastwave.app.data.jellyfin.importer.ImportMatcher.norm(it.name.orEmpty()) == n }
+    }
+
+    suspend fun findAlbum(name: String, artist: String?): JfItem? {
+        val m = com.lastwave.app.data.jellyfin.importer.ImportMatcher
+        val n = m.norm(name)
+        val a = artist?.let { m.norm(it) }
+        return api.search(requireSession(), name, 20).items.firstOrNull {
+            it.type == "MusicAlbum" && m.norm(it.name.orEmpty()) == n &&
+                (a == null || m.norm(it.albumArtist.orEmpty()).let { x -> x.contains(a) || a.contains(x) })
+        }
+    }
+
+    suspend fun searchSongs(term: String, limit: Int = 20): List<PlayableTrack> {
+        val s = requireSession()
+        val kbps = effectiveKbps()
+        return api.searchSongs(s, term, limit).items.map { toPlayable(s, it, kbps) }
+    }
+
+    suspend fun item(id: String): JfItem = api.item(requireSession(), id)
+
+    /** Finds the best library match for an imported song, trying a few search phrasings. */
+    suspend fun matchImport(src: com.lastwave.app.data.jellyfin.importer.ImportTrack):
+        com.lastwave.app.data.jellyfin.importer.ImportOutcome {
+        val matcher = com.lastwave.app.data.jellyfin.importer.ImportMatcher
+        val terms = listOf(
+            matcher.baseTitle(src.title),
+            src.title,
+            matcher.baseTitle(src.title).split(' ').take(3).joinToString(" "),
+        ).filter { it.isNotBlank() }.distinct()
+        val found = LinkedHashMap<String, PlayableTrack>()
+        for (term in terms) {
+            val hits = try { searchSongs(term, 25) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { emptyList() }
+            hits.forEach { h -> h.internalTrackId?.let { found.putIfAbsent(it, h) } }
+            val best = matcher.rank(src, found.values.toList()).firstOrNull()
+            if (best != null && matcher.accepts(src, best)) {
+                return com.lastwave.app.data.jellyfin.importer.ImportOutcome(src, best, emptyList())
+            }
+        }
+        val ranked = matcher.rank(src, found.values.toList())
+        return com.lastwave.app.data.jellyfin.importer.ImportOutcome(src, null, ranked.take(3))
+    }
+
     suspend fun searchHits(term: String): SearchHits {
         val s = requireSession()
-        val kbps = store.currentStreamKbps()
+        val kbps = effectiveKbps()
         val items = api.search(s, term).items
         return SearchHits(
             albums = items.filter { it.type == "MusicAlbum" },
@@ -137,7 +202,7 @@ class JellyfinRepository @Inject constructor(
     /** Everything saved (hearted albums/artists, playlists, liked songs), for searching locally. */
     suspend fun savedHits(): SearchHits {
         val s = requireSession()
-        val kbps = store.currentStreamKbps()
+        val kbps = effectiveKbps()
         return SearchHits(
             albums = api.albums(s, 0, 500, true).items,
             artists = api.albumArtists(s, 0, 500, true).items,
@@ -175,7 +240,7 @@ class JellyfinRepository @Inject constructor(
 
     suspend fun favoriteTracks(): List<PlayableTrack> {
         val s = requireSession()
-        val kbps = store.currentStreamKbps()
+        val kbps = effectiveKbps()
         return api.favoriteTracks(s).items.map { toPlayable(s, it, kbps) }
     }
 

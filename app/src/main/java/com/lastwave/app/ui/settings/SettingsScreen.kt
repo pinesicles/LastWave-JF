@@ -627,6 +627,8 @@ fun SettingsScreen(
             ) {
                 when (tab) {
                     null -> {
+                        item { JellyfinSettingsSection() }
+
                         item {
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 SectionLabel("Collaboration & Social")

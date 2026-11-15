@@ -127,7 +127,40 @@ private fun SearchHits.matching(q: String): SearchHits {
 class LibraryViewModel @Inject constructor(
     private val repository: JellyfinRepository,
     private val downloads: JellyDownloads,
+    private val jellyPins: com.lastwave.app.data.jellyfin.JellyPins,
 ) : ViewModel() {
+
+    // ---- long-press menu for albums / playlists / artists and pins ------------------------
+
+    val pins: StateFlow<Set<String>> =
+        jellyPins.pins.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    fun togglePin(id: String) {
+        viewModelScope.launch { jellyPins.toggle(id) }
+    }
+
+    private val _actions = MutableStateFlow<LibraryDetail?>(null)
+    val actions: StateFlow<LibraryDetail?> = _actions.asStateFlow()
+    fun showActions(detail: LibraryDetail) { _actions.value = detail }
+    fun dismissActions() { _actions.value = null }
+
+    /** Every song in the album / playlist / artist, ready to play or add to a playlist. */
+    suspend fun tracksFor(detail: LibraryDetail): List<PlayableTrack> = when (detail) {
+        is LibraryDetail.Album -> repository.albumTracks(detail.item.id)
+        is LibraryDetail.Playlist -> repository.playlistTracks(detail.item.id)
+        is LibraryDetail.LikedSongs -> repository.favoriteTracks()
+        is LibraryDetail.Artist -> repository.artistAlbums(detail.item.id).items.take(30)
+            .flatMap { runCatching { repository.albumTracks(it.id) }.getOrDefault(emptyList()) }
+    }
+
+    /** "Go to artist" from an album's menu. */
+    fun openArtistOf(album: JfItem) {
+        val name = album.albumArtist ?: return
+        viewModelScope.launch {
+            val artist = runCatching { repository.findArtist(name) }.getOrNull()
+            if (artist != null) open(LibraryDetail.Artist(artist)) else _events.tryEmit("Artist not found in your library")
+        }
+    }
 
     val sessionState: StateFlow<LibrarySession> = repository.session
         .map { if (it == null) LibrarySession.SignedOut else LibrarySession.SignedIn(it) }
@@ -519,6 +552,23 @@ class LibraryViewModel @Inject constructor(
         downloads.collections.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val downloadProgress: StateFlow<Map<String, CollectionProgress>> =
         downloads.progress.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    fun downloadFraction(id: String): kotlinx.coroutines.flow.Flow<Float> = downloads.collectionFraction(id)
+
+    val wifiOnly: StateFlow<Boolean> = downloads.wifiOnly.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun setWifiOnly(on: Boolean) {
+        viewModelScope.launch { downloads.setWifiOnly(on) }
+    }
+
+    /** Opens a downloaded album/playlist and looks up its real saved (heart) state when online. */
+    fun openFromDownloads(detail: LibraryDetail, itemId: String) {
+        open(detail)
+        viewModelScope.launch {
+            val fav = runCatching { repository.item(itemId).isFavorite }.getOrNull() ?: return@launch
+            _favouriteOverrides.update { it + (itemId to fav) }
+        }
+    }
 
     private val _coverTags = MutableStateFlow<Map<String, String>>(emptyMap())
     val coverTags: StateFlow<Map<String, String>> = _coverTags.asStateFlow()

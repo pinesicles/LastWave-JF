@@ -18,7 +18,7 @@ import com.lastwave.app.data.podcast.PodcastProgressEntity
         com.lastwave.app.data.jellyfin.download.JfCollectionEntity::class,
         com.lastwave.app.data.jellyfin.download.JfCollectionTrackEntity::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {

@@ -268,6 +268,57 @@ class JellyfinApi @Inject constructor(
         }.build(),
     )
 
+    suspend fun genreNames(session: JellyfinSession): List<String> = getItems(
+        session,
+        urlBuilder(session.serverUrl, "MusicGenres").apply {
+            addQueryParameter("userId", session.userId)
+            addQueryParameter("limit", "500")
+        }.build(),
+    ).items.mapNotNull { it.name }
+
+    suspend fun albumsByGenres(session: JellyfinSession, genres: List<String>, limit: Int): JfPage = getItems(
+        session,
+        urlBuilder(session.serverUrl, "Items").apply {
+            addQueryParameter("userId", session.userId)
+            addQueryParameter("includeItemTypes", "MusicAlbum")
+            addQueryParameter("recursive", "true")
+            addQueryParameter("genres", genres.joinToString("|"))
+            addQueryParameter("sortBy", "Random")
+            addQueryParameter("limit", limit.toString())
+        }.build(),
+    )
+
+    /** kind is "Albums" or "Artists". */
+    suspend fun similar(session: JellyfinSession, kind: String, id: String, limit: Int): JfPage = getItems(
+        session,
+        urlBuilder(session.serverUrl, kind, id, "Similar").apply {
+            addQueryParameter("userId", session.userId)
+            addQueryParameter("limit", limit.toString())
+        }.build(),
+    )
+
+    /** Songs only, for matching imports and manual search. */
+    suspend fun searchSongs(session: JellyfinSession, term: String, limit: Int = 20): JfPage = getItems(
+        session,
+        urlBuilder(session.serverUrl, "Items").apply {
+            addQueryParameter("userId", session.userId)
+            addQueryParameter("searchTerm", term)
+            addQueryParameter("includeItemTypes", "Audio")
+            addQueryParameter("recursive", "true")
+            addQueryParameter("fields", ITEM_FIELDS)
+            addQueryParameter("limit", limit.toString())
+        }.build(),
+    )
+
+    suspend fun item(session: JellyfinSession, itemId: String): JfItem =
+        JellyfinJson.decodeFromString(
+            execute(authed(session, urlBuilder(session.serverUrl, "Users", session.userId, "Items", itemId).build()).get().build()),
+        )
+
+    /** Raw JSON from `/Audio/{id}/Lyrics` (Jellyfin 10.9+). Throws on 404 when there are none. */
+    suspend fun lyricsJson(session: JellyfinSession, itemId: String): String =
+        execute(authed(session, urlBuilder(session.serverUrl, "Audio", itemId, "Lyrics").build()).get().build())
+
     /** Favourites live on the server, so they follow you across devices. */
     suspend fun setFavorite(session: JellyfinSession, itemId: String, favorite: Boolean) {
         val url = urlBuilder(session.serverUrl, "Users", session.userId, "FavoriteItems", itemId).build()
@@ -421,6 +472,16 @@ class JellyfinApi @Inject constructor(
     /** What "download" fetches: the original file. */
     fun downloadUrl(session: JellyfinSession, itemId: String): String =
         urlBuilder(session.serverUrl, "Items", itemId, "Download").apply {
+            addQueryParameter("api_key", session.token)
+        }.build().toString()
+
+    /** A plain MP3 file transcoded by the server at [kbps], for downloads at reduced quality. */
+    fun transcodedFileUrl(session: JellyfinSession, itemId: String, kbps: Int): String =
+        urlBuilder(session.serverUrl, "Audio", itemId, "stream.mp3").apply {
+            addQueryParameter("audioCodec", "mp3")
+            addQueryParameter("audioBitRate", (kbps * 1000L).toString())
+            addQueryParameter("maxAudioChannels", "2")
+            addQueryParameter("deviceId", session.deviceId)
             addQueryParameter("api_key", session.token)
         }.build().toString()
 

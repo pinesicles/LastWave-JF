@@ -24,6 +24,7 @@ data class JellyfinFeedState(
     val session: JellyfinSession? = null,
     val recentlyAdded: List<JfItem> = emptyList(),
     val randomPicks: List<JfItem> = emptyList(),
+    val shelves: List<FeedShelf> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
 )
@@ -32,12 +33,39 @@ data class JellyfinFeedState(
 @HiltViewModel
 class JellyfinFeedViewModel @Inject constructor(
     private val repository: JellyfinRepository,
+    private val shelfBuilder: JellyFeedShelves,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(JellyfinFeedState())
     val state: StateFlow<JellyfinFeedState> = _state.asStateFlow()
 
     private var refreshJob: Job? = null
+    private var shelvesJob: Job? = null
+
+    private fun addShelves(new: List<FeedShelf>) {
+        if (new.isEmpty()) return
+        _state.update { s ->
+            val keys = new.map { it.key }.toSet()
+            s.copy(shelves = (s.shelves.filter { it.key !in keys } + new).sortedBy { it.order })
+        }
+    }
+
+    /** Personalised shelves load after the basics, each appearing as soon as it's ready. */
+    private fun loadShelves() {
+        shelvesJob?.cancel()
+        shelvesJob = viewModelScope.launch {
+            _state.update { it.copy(shelves = emptyList()) }
+            coroutineScope {
+                launch { runCatching { shelfBuilder.because() }.onSuccess(::addShelves) }
+                launch {
+                    val genres = runCatching { shelfBuilder.genres() }.getOrNull().orEmpty()
+                    if (genres.isEmpty()) return@launch
+                    launch { runCatching { shelfBuilder.timeOfDay(genres) }.getOrNull()?.let { addShelves(listOf(it)) } }
+                    launch { addShelves(shelfBuilder.moods(genres)) }
+                }
+            }
+        }
+    }
 
     init {
         viewModelScope.launch {
@@ -59,6 +87,7 @@ class JellyfinFeedViewModel @Inject constructor(
                     val r = recent.await()
                     val q = random.await()
                     _state.update { it.copy(recentlyAdded = r, randomPicks = q, loading = false) }
+                    loadShelves()
                 }
             } catch (e: CancellationException) {
                 throw e
