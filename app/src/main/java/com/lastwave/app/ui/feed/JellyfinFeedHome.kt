@@ -106,6 +106,10 @@ fun JellyfinFeedHome(
     val libTabs by libraryViewModel.tabs.collectAsStateWithLifecycle()
     val libTab by libraryViewModel.tab.collectAsStateWithLifecycle()
     val sessionState by libraryViewModel.sessionState.collectAsStateWithLifecycle()
+    val feedState by feedViewModel.state.collectAsStateWithLifecycle()
+    val player = LocalMusicPlayer.current
+    val scope = rememberCoroutineScope()
+    val libRefreshing by libraryViewModel.refreshing.collectAsStateWithLifecycle()
     val closeSearch = { searching = false; libraryViewModel.clearSearch() }
     BackHandler(enabled = active && searching) { closeSearch() }
 
@@ -121,9 +125,9 @@ fun JellyfinFeedHome(
                         HeaderActionIcon(Icons.Filled.Close, "Close search", closeSearch)
                     } else {
                         JellyHeaderActions(
-                            onRefresh = if (section == 0) feedViewModel::refresh else libraryViewModel::refresh,
                             onSearch = { searching = true },
-                            onOpenDownloads = onOpenDownloads,
+                            recognitionKey = "recognition_jelly_feed",
+                            onRecognised = { q -> searching = true; libraryViewModel.setSearchQuery(q) },
                             onOpenSettings = onOpenSettings,
                         )
                     }
@@ -132,7 +136,7 @@ fun JellyfinFeedHome(
                     if (searching) {
                         JellySearchField(search.query, libraryViewModel::setSearchQuery)
                     } else {
-                        JellyChipsBar(SECTIONS, section) { section = it }
+                        JellyChipsBar(SECTIONS, section, fill = true) { section = it }
                         if (section == 1) {
                             JellyChipsBar(libTabs.map { it.label }, libTabs.indexOf(libTab).coerceAtLeast(0)) {
                                 libraryViewModel.selectTab(libTabs[it])
@@ -150,13 +154,28 @@ fun JellyfinFeedHome(
                     searching -> JellySearchResults(
                         (sessionState as? LibrarySession.SignedIn)?.session, search, libraryViewModel,
                     )
-                    section == 0 -> FeedSections(feedViewModel, libraryViewModel)
-                    else -> LibraryScreen(
-                        mode = LibraryMode.SERVER,
-                        embedded = true,
-                        active = active,
-                        viewModel = libraryViewModel,
-                    )
+                    section == 0 -> com.lastwave.app.ui.library.JellyPullRefresh(feedState.loading, feedViewModel::refresh) {
+                        FeedSections(feedViewModel, libraryViewModel)
+                    }
+                    else -> com.lastwave.app.ui.library.JellyPullRefresh(libRefreshing, libraryViewModel::refresh) {
+                        androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()) {
+                            ShuffleAllBar(inset) {
+                                scope.launch {
+                                    runCatching { feedViewModel.randomTracks() }.getOrNull()
+                                        ?.takeIf { it.isNotEmpty() }
+                                        ?.let { player.playQueue(it, 0, "Shuffle all", startShuffled = false) }
+                                }
+                            }
+                            CompositionLocalProvider(LocalTopInset provides 0.dp) {
+                                LibraryScreen(
+                                    mode = LibraryMode.SERVER,
+                                    embedded = true,
+                                    active = active,
+                                    viewModel = libraryViewModel,
+                                )
+                            }
+                        }
+                    }
                 }
                 }
             }
@@ -170,6 +189,13 @@ private fun FeedSections(feedViewModel: JellyfinFeedViewModel, libraryViewModel:
     val player = LocalMusicPlayer.current
     val scope = rememberCoroutineScope()
     val session = state.session
+    val feedContext = androidx.compose.ui.platform.LocalContext.current
+    var orderVersion by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    var rearranging by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    // Not state on purpose: it's only read when the dialog opens, and writing state while the list builds would loop.
+    val allSections = androidx.compose.runtime.remember { arrayOfNulls<List<FeedSection>>(1) }
+    @Suppress("UNUSED_VARIABLE") val readOrder = orderVersion
+    if (rearranging) RearrangeFeedDialog(allSections[0].orEmpty()) { rearranging = false; orderVersion++ }
     val outsideVm: com.lastwave.app.ui.library.OutsideSourcesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     val outsideRecs by outsideVm.recommendations.collectAsStateWithLifecycle()
     androidx.compose.runtime.LaunchedEffect(state.online, state.session) {
@@ -191,40 +217,26 @@ private fun FeedSections(feedViewModel: JellyfinFeedViewModel, libraryViewModel:
             contentPadding = PaddingValues(top = LocalTopInset.current, bottom = FloatingNavDefaults.contentBottomPadding()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            item(key = "actions") {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                runCatching { feedViewModel.randomTracks() }.getOrNull()
-                                    ?.takeIf { it.isNotEmpty() }
-                                    ?.let { player.playQueue(it, 0, "Shuffle all", startShuffled = false) }
-                            }
-                        },
-                        shape = ExpressivePillShape,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.padding(end = 6.dp))
-                        Text("Shuffle all")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                runCatching { feedViewModel.likedTracks() }.getOrNull()
-                                    ?.takeIf { it.isNotEmpty() }
-                                    ?.let { player.playQueue(it, 0, "Liked songs", startShuffled = true) }
-                            }
-                        },
-                        shape = ExpressivePillShape,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(Icons.Filled.Favorite, contentDescription = null, modifier = Modifier.padding(end = 6.dp))
-                        Text("Liked songs")
+            item(key = "tiles") {
+                // Liked songs, then what you play most and most recently; falls back to new albums on a fresh install.
+                val candidates = (state.mostPlayed + state.recentlyPlayed + state.recentlyAdded).distinctBy { it.id }
+                val total = 1 + candidates.size.coerceAtMost(5)
+                val count = if (total >= 2) minOf(6, total - total % 2) else 1
+                val tiles = buildList {
+                    add(FeedTile("Liked songs", null, heart = true, onClick = { libraryViewModel.open(LibraryDetail.LikedSongs()) }))
+                    candidates.take(count - 1).forEach { item ->
+                        val detail = detailOf(item, false)
+                        add(
+                            FeedTile(
+                                title = item.name.orEmpty(),
+                                coverUrl = libraryViewModel.coverUrl(session, item),
+                                onClick = { libraryViewModel.open(detail) },
+                                onLongClick = { libraryViewModel.showActions(detail) },
+                            ),
+                        )
                     }
                 }
+                androidx.compose.foundation.layout.Box(Modifier.padding(top = 10.dp)) { FeedTilesGrid(tiles) }
             }
 
             val offlineMode = !state.online || (state.error != null && state.recentlyAdded.isEmpty())
@@ -252,20 +264,32 @@ private fun FeedSections(feedViewModel: JellyfinFeedViewModel, libraryViewModel:
                     Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CenteredProgressInline() }
                 }
             } else {
-                items(state.shelves.filter { it.order < 50 }, key = { it.key }) { shelf ->
-                    AlbumShelf(shelf.title, shelf.items, feedViewModel, session, libraryViewModel, round = shelf.artists)
+                // Every shelf is a section so the order can be rearranged (saved per device).
+                val sections = buildList {
+                    state.shelves.filter { it.order < 50 && !it.artists }.forEach { shelf ->
+                        add(FeedSection("s_${shelf.key}", shelf.title) { AlbumShelf(shelf.title, shelf.items, feedViewModel, session, libraryViewModel, round = shelf.artists) })
+                    }
+                    add(FeedSection("recent", "Recently added") { AlbumShelf("Recently added", state.recentlyAdded, feedViewModel, session, libraryViewModel) })
+                    state.shelves.filter { it.order >= 50 && !it.artists }.forEach { shelf ->
+                        add(FeedSection("s_${shelf.key}", shelf.title) { AlbumShelf(shelf.title, shelf.items, feedViewModel, session, libraryViewModel, round = shelf.artists) })
+                    }
+                    add(FeedSection("random", "Random picks") { AlbumShelf("Random picks", state.randomPicks, feedViewModel, session, libraryViewModel) })
+                    state.shelves.filter { it.artists }.forEach { shelf ->
+                        add(FeedSection("a_${shelf.key}", shelf.title) { AlbumShelf(shelf.title, shelf.items, feedViewModel, session, libraryViewModel, round = true) })
+                    }
+                    if (state.online) {
+                        add(FeedSection("youtube", "YouTube picks") { com.lastwave.app.ui.library.YouTubeShelf(outsideRecs, player) })
+                        add(FeedSection("discover", "Discover (request server)") { DiscoverShelves() })
+                        add(FeedSection("listenbrainz", "ListenBrainz picks") { ListenBrainzShelf() })
+                        add(FeedSection("lastfm", "Because you listen to… (Last.fm)") { LastFmShelf() })
+                    }
                 }
-                item(key = "recent") {
-                    AlbumShelf("Recently added", state.recentlyAdded, feedViewModel, session, libraryViewModel)
-                }
-                items(state.shelves.filter { it.order >= 50 }, key = { it.key }) { shelf ->
-                    AlbumShelf(shelf.title, shelf.items, feedViewModel, session, libraryViewModel, round = shelf.artists)
-                }
-                item(key = "random") {
-                    AlbumShelf("Random picks", state.randomPicks, feedViewModel, session, libraryViewModel)
-                }
-                if (state.online) item(key = "youtube") {
-                    com.lastwave.app.ui.library.YouTubeShelf(outsideRecs, player)
+                val arranged = FeedOrder.arrange(feedContext, sections)
+                allSections[0] = arranged
+                val hiddenIds = FeedOrder.hidden(feedContext)
+                items(arranged.filter { it.id !in hiddenIds }, key = { it.id }) { it.content() }
+                item(key = "rearrange") {
+                    androidx.compose.material3.TextButton(onClick = { rearranging = true }, modifier = Modifier.padding(horizontal = 8.dp)) { Text("Rearrange home") }
                 }
             }
         }

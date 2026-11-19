@@ -19,6 +19,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Target audio playback and known music players without requiring QUERY_ALL_PACKAGES -->
     <queries>
+        <package android:name="com.google.android.projection.gearhead" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="content" android:mimeType="audio/*" />

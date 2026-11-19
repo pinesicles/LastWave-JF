@@ -202,6 +202,9 @@ class JellyImportViewModel @Inject constructor(
         val matched = outcomes.mapNotNull { it.match }
         val ids = matched.mapNotNull { it.jellyfinItemIdOrNull() }.distinct()
         val playlistId = repository.createPlaylist(name, ids)
+        runCatching {
+            ImportLeftovers.save(context, playlistId, outcomes.filter { o -> o.match == null }.map { o -> o.source })
+        }
         _state.update {
             it.copy(
                 phase = Phase.DONE,
@@ -221,6 +224,7 @@ class JellyImportViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 repository.addToPlaylist(pid, listOf(id))
+                _state.value.unmatched.getOrNull(index)?.let { u -> ImportLeftovers.remove(context, pid, u.source) }
                 _state.update { s ->
                     s.copy(
                         unmatched = s.unmatched.mapIndexed { i, u -> if (i == index) u.copy(added = true) else u },

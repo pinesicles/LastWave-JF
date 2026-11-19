@@ -505,12 +505,24 @@ internal fun PlayerModeButton(
     val scale by animateFloatAsState(
         if (pressed) 0.92f else 1f, ExpressiveMotion.spatialSpring(), label = "modePress",
     )
+    // Over artwork the idle buttons are a faint white wash: an active one is a brighter white wash, not a themed colour.
+    val overArtwork = background.luminance() > 0.9f && background.alpha < 0.5f
     val container by animateColorAsState(
-        if (active) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.86f)
+        if (active && overArtwork) Color.White.copy(alpha = 0.30f)
+        else if (active) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.86f)
         else liquidGlassContainerColor(background), label = "modeContainer",
     )
+    // On a dark cover the artwork-tinted pair can end up dark-on-dark: fall back to white or black by contrast.
+    val activeContent = run {
+        val base = MaterialTheme.colorScheme.primaryContainer
+        val preferred = MaterialTheme.colorScheme.onPrimaryContainer
+        val hi = maxOf(base.luminance(), preferred.luminance()) + 0.05f
+        val lo = minOf(base.luminance(), preferred.luminance()) + 0.05f
+        if (overArtwork) Color.White
+        else if (hi / lo >= 3f) preferred else if (base.luminance() < 0.5f) Color.White else Color.Black
+    }
     val content by animateColorAsState(
-        if (active) MaterialTheme.colorScheme.onPrimaryContainer else foreground, label = "modeContent",
+        if (active) activeContent else foreground, label = "modeContent",
     )
     LiquidGlassSurface(
 glassModifier = Modifier.liquidGlassChrome(CircleShape, LocalLiquidGlass.current, LiquidGlassPreset.PlayerControls, interactionSource = interaction),
@@ -531,7 +543,7 @@ glassModifier = Modifier.liquidGlassChrome(CircleShape, LocalLiquidGlass.current
             },
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Icon(icon, description, Modifier.size(iconSize))
+            Icon(icon, description, Modifier.size(iconSize), tint = content)
             if (active) {
                 Box(
                     Modifier.align(Alignment.BottomCenter).padding(bottom = 5.dp)

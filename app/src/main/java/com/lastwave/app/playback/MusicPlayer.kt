@@ -2640,13 +2640,18 @@ class MusicPlayer @Inject constructor(
         startShuffled: Boolean = false,
         enableRadioContinuation: Boolean = false,
     ) {
+        val tracks = PlaybackTrackHook.apply(tracks)
+        swipeQueuedKeys.clear()
         if (!enableRadioContinuation) disableRadioQueue()
+        // Shuffle belongs to each playlist/album, not to the whole player.
+        val shuffleNow = PlaylistShuffleMemory.resolve(appContext, sourceLabel, startShuffled)
+        if (playerDelegate.isInitialized() && player.shuffleModeEnabled != shuffleNow) player.shuffleModeEnabled = shuffleNow
         playQueueInternal(
             tracks = tracks,
             startIndex = startIndex,
             endlessDiscover = false,
             sourceLabel = sourceLabel,
-            startShuffled = startShuffled,
+            startShuffled = shuffleNow,
             enableRadioContinuation = enableRadioContinuation,
         )
     }
@@ -3002,12 +3007,37 @@ class MusicPlayer @Inject constructor(
         }
     }
 
-    fun playNext(track: PlayableTrack) = onMain {
-        val enriched = track.withYoutubeArtwork()
+    /** Songs added by swipe ("play next, in order"); they stay in the order they were added. */
+    private val swipeQueuedKeys = mutableSetOf<String>()
+
+    /**
+     * Like [playNext], but the song goes after the ones already added this way, so repeated swipes play
+     * first-added-first. The long-press "Play next" keeps using [playNext] (straight after the current song).
+     */
+    fun playNextInOrder(track: PlayableTrack) = onMain {
+        // Count the swipe-added songs waiting right after the current one, in real play order (shuffle included).
+        val cur = player.currentMediaItemIndex
+        val ahead: List<Int> = if (player.shuffleModeEnabled) {
+            val order = currentPlayOrder()
+            val at = order.indexOf(cur)
+            if (at >= 0) order.drop(at + 1) else emptyList()
+        } else {
+            ((cur + 1).coerceAtLeast(0) until player.mediaItemCount).toList()
+        }
+        var run = 0
+        while (run < ahead.size && player.getMediaItemAt(ahead[run]).toPlayableTrack().swipeKey() in swipeQueuedKeys) run++
+        swipeQueuedKeys += PlaybackTrackHook.apply(track).swipeKey()
+        playNext(track, run)
+    }
+
+    private fun PlayableTrack.swipeKey(): String = internalTrackId?.takeIf { it.isNotBlank() } ?: mediaIdKey()
+
+    fun playNext(track: PlayableTrack, afterQueued: Int = 0) = onMain {
+        val enriched = PlaybackTrackHook.apply(track).withYoutubeArtwork()
         if (isCasting) {
             _state.update { snapshot ->
                 val queue = snapshot.queue.toMutableList()
-                queue.add((snapshot.currentIndex + 1).coerceIn(0, queue.size), enriched)
+                queue.add((snapshot.currentIndex + 1 + afterQueued).coerceIn(0, queue.size), enriched)
                 snapshot.copy(queue = queue)
             }
             persistPlaybackSession()
@@ -3016,11 +3046,11 @@ class MusicPlayer @Inject constructor(
         val wasEnded = player.playbackState == Player.STATE_ENDED
         val wasEmpty = player.mediaItemCount == 0
         val currentIndex = player.currentMediaItemIndex
-        val index = (currentIndex + 1).coerceIn(0, player.mediaItemCount)
+        val index = (currentIndex + 1 + afterQueued).coerceIn(0, player.mediaItemCount)
         player.addMediaItem(index, enriched.toMediaItem())
         // Under shuffle the insert lands at a random permutation spot;
         // pin it directly after the current track so it truly plays next.
-        placeInsertedIndexInShuffleOrder(index, last = false)
+        placeInsertedIndexInShuffleOrder(index, last = false, afterQueued = afterQueued)
         refresh(player)
         enrichUpcomingQueue(currentIndex.coerceAtLeast(0))
         val nextIndex = if (player.shuffleModeEnabled) player.nextMediaItemIndex else (currentIndex + 1)
@@ -3036,7 +3066,7 @@ class MusicPlayer @Inject constructor(
     }
 
     fun addToQueue(track: PlayableTrack) = onMain {
-        val enriched = track.withYoutubeArtwork()
+        val enriched = PlaybackTrackHook.apply(track).withYoutubeArtwork()
         if (isCasting) {
             _state.update { it.copy(queue = it.queue + enriched) }
             persistPlaybackSession()
@@ -3848,6 +3878,7 @@ class MusicPlayer @Inject constructor(
     fun toggleShuffle() = setShuffleEnabled(!state.value.shuffleEnabled)
 
     fun setShuffleEnabled(enabled: Boolean) = onMain {
+        PlaylistShuffleMemory.remember(appContext, _state.value.sourceLabel, enabled)
         if (isCasting) {
             _state.update { it.copy(shuffleEnabled = enabled) }
             persistPlaybackSession()

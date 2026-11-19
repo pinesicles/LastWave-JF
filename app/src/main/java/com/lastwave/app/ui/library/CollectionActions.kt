@@ -57,9 +57,11 @@ internal fun CollectionActionsHost(viewModel: LibraryViewModel, canAddToPlaylist
 
     val rows = buildList {
         add(MiniTrayCustomRow(Icons.Filled.PlayArrow, "Play") {
+            viewModel.recordPlay(d)
             withTracks { player.playQueue(it, 0, item.name.orEmpty(), startShuffled = false) }
         })
         add(MiniTrayCustomRow(Icons.Filled.Shuffle, "Shuffle") {
+            viewModel.recordPlay(d)
             withTracks { player.playQueue(it, 0, item.name.orEmpty(), startShuffled = true) }
         })
         add(MiniTrayCustomRow(Icons.Filled.QueueMusic, "Add to queue") {

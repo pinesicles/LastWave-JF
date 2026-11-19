@@ -77,6 +77,8 @@ fun JellyImportDialog(viewModel: JellyImportViewModel, onClose: (created: Boolea
         }
     }
     var searchIndex by remember { mutableStateOf<Int?>(null) }
+    var requesting by remember { mutableStateOf(false) }
+    if (requesting) RequestMissingDialog(state.unmatched, onClose = { requesting = false })
 
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -110,6 +112,7 @@ fun JellyImportDialog(viewModel: JellyImportViewModel, onClose: (created: Boolea
                     JellyImportViewModel.Phase.DONE -> ImportResult(
                         state = state,
                         onExport = { exporter.launch("unmatched-songs.csv") },
+                        onRequestMissing = { requesting = true },
                         onSearch = { searchIndex = it },
                         onPickSuggestion = viewModel::addManual,
                         onDone = close,
@@ -206,6 +209,7 @@ private fun ImportForm(state: JellyImportViewModel.UiState, viewModel: JellyImpo
 private fun ImportResult(
     state: JellyImportViewModel.UiState,
     onExport: () -> Unit,
+    onRequestMissing: () -> Unit,
     onSearch: (Int) -> Unit,
     onPickSuggestion: (Int, PlayableTrack) -> Unit,
     onDone: () -> Unit,
@@ -222,7 +226,8 @@ private fun ImportResult(
             Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onDone, shape = ExpressivePillShape) { Text("Done") }
                 if (state.unmatched.any { !it.added }) {
-                    OutlinedButton(onClick = onExport, shape = ExpressivePillShape) { Text("Export not found (CSV)") }
+                    OutlinedButton(onClick = onRequestMissing, shape = ExpressivePillShape) { Text("Request missing") }
+                    OutlinedButton(onClick = onExport, shape = ExpressivePillShape) { Text("Export CSV") }
                 }
             }
         }

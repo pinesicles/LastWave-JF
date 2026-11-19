@@ -384,20 +384,32 @@ fun PlayerHost(
     }
     var playlistTrack by remember { mutableStateOf<PlayableTrack?>(null) }
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val keepLyricsAwake = expanded && currentTab == FullPlayerTab.LYRICS && settings.keepLyricsScreenAwake
+    val nowPlayingAwake by com.lastwave.app.ui.settings.NowPlayingAwake
+        .flow(androidx.compose.ui.platform.LocalContext.current).collectAsStateWithLifecycle()
+    val keepLyricsAwake = expanded &&
+        ((currentTab == FullPlayerTab.LYRICS && settings.keepLyricsScreenAwake) || (nowPlayingAwake && state.isPlaying))
     val currentView = androidx.compose.ui.platform.LocalView.current
+    val awakeContext = androidx.compose.ui.platform.LocalContext.current
     DisposableEffect(keepLyricsAwake) {
+        // Both the view flag and the window flag: either one alone can be ignored depending on which window is focused.
+        val window = generateSequence(awakeContext) { (it as? android.content.ContextWrapper)?.baseContext }
+            .filterIsInstance<android.app.Activity>().firstOrNull()?.window
         if (keepLyricsAwake) {
             currentView.keepScreenOn = true
+            window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
         onDispose {
             if (keepLyricsAwake) {
                 currentView.keepScreenOn = false
+                window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
         }
     }
     val context = androidx.compose.ui.platform.LocalContext.current
     var jellyPickerTracks by remember { mutableStateOf<List<PlayableTrack>?>(null) }
+    var requestQuery by remember { mutableStateOf<String?>(null) }
+    val findVm: com.lastwave.app.ui.library.OutsideSourcesViewModel = androidx.hilt.navigation.compose.hiltViewModel(key = "outside-global")
+    val dataSaving by com.lastwave.app.data.network.DataMeter.saving.collectAsStateWithLifecycle()
     val requestAddToPlaylist = remember<(PlayableTrack) -> Unit>(viewModel) {
         { track: PlayableTrack ->
             if (track.internalTrackId?.startsWith("jf:") == true) {
@@ -519,6 +531,16 @@ fun PlayerHost(
         LocalMusicPlayer provides viewModel.player,
         LocalAddToPlaylist provides requestAddToPlaylist,
         com.lastwave.app.ui.library.LocalJellyAddToPlaylist provides { tracks -> jellyPickerTracks = tracks },
+        com.lastwave.app.ui.requests.LocalRequestAlbum provides { q -> requestQuery = q },
+        com.lastwave.app.ui.library.LocalFindOnServer provides { q ->
+            findVm.findOnServer(q) { ok ->
+                android.widget.Toast.makeText(
+                    context,
+                    if (ok) "Found on your server" else "Not on your server yet. Hold it to request it.",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
+        },
         LocalMiniPlayerScrollClearance provides if (state.current != null && !settings.buttonNowPlayingEnabled && !hideMiniPlayer) 98.dp else 0.dp,
         LocalMiniPlayerSnackbarClearance provides if (miniPlayerVisible) {
             // Keep snackbars clear of the tray: its bottom lift plus its ~80dp card.
@@ -703,6 +725,7 @@ fun PlayerHost(
             }
             
             com.lastwave.app.ui.library.JellyAddToPlaylistHost(jellyPickerTracks) { jellyPickerTracks = null }
+            com.lastwave.app.ui.requests.RequestAlbumHost(requestQuery) { requestQuery = null }
             playlistTrack?.let { track ->
                 AddToPlaylistDialogHost(
                     viewModel = viewModel,
@@ -769,10 +792,10 @@ internal fun ExpandedPlayer(
         lyricsButtonsAutoHideSeconds = settings.lyricsButtonsAutoHideSeconds,
         translationLanguage = settings.translationLanguage,
         canvas = canvas,
-        canvasEnabled = settings.canvasEnabled,
+        canvasEnabled = settings.canvasEnabled && !com.lastwave.app.data.network.DataMeter.saving.collectAsStateWithLifecycle().value,
         canvasFullBleedEnabled = settings.canvasFullBleed,
         canvasGradientBlurEnabled = settings.canvasGradientBlurEnabled,
-        musicVideoEnabled = settings.musicVideoEnabled,
+        musicVideoEnabled = settings.musicVideoEnabled && !com.lastwave.app.data.network.DataMeter.saving.collectAsStateWithLifecycle().value,
         showAutoEqInVolumePanel = settings.showAutoEqInVolumePanel,
         currentTab = currentTab,
         onTabChange = onTabChange,

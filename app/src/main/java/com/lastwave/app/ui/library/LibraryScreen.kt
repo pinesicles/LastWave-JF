@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.Arrangement
 import com.lastwave.app.ui.common.HeaderActionIcon
 import com.lastwave.app.ui.common.ExpressiveHeader
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -47,6 +48,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -83,6 +87,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -92,7 +97,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
@@ -192,7 +203,7 @@ fun LibraryScreen(
         when {
             sessionState is LibrarySession.Loading -> CenteredProgress()
             signedIn != null && detail != null ->
-                DetailPage(signedIn.session, detail!!, viewModel, topModifier)
+                DetailPage(signedIn.session, detail!!, viewModel, Modifier.fillMaxSize(), applyStatusBar = !embedded)
             embedded -> LibraryBody(tab, signedIn, viewModel, onOpenPlaylist, onOpenFeedPlaylist, onOpenGenerator)
             else -> LibraryPage(
                 viewModel, tab, signedIn, onOpenPlaylist, onOpenFeedPlaylist, onOpenGenerator,
@@ -257,9 +268,7 @@ private fun LibraryPage(
                             }
                         }
                         JellyHeaderActions(
-                            onRefresh = { if (tab != LibraryTab.PHONE) viewModel.refresh() },
                             onSearch = { searching = true },
-                            onOpenDownloads = onOpenDownloads,
                             onOpenSettings = onOpenSettings,
                         )
                     }
@@ -281,7 +290,10 @@ private fun LibraryPage(
                 if (searching) {
                     JellySearchResults(signedIn?.session, search, viewModel)
                 } else {
-                    LibraryBody(tab, signedIn, viewModel, onOpenPlaylist, onOpenFeedPlaylist, onOpenGenerator)
+                    val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
+                    JellyPullRefresh(refreshing, { if (tab != LibraryTab.PHONE) viewModel.refresh() }) {
+                        LibraryBody(tab, signedIn, viewModel, onOpenPlaylist, onOpenFeedPlaylist, onOpenGenerator)
+                    }
                 }
             }
         },
@@ -312,20 +324,22 @@ private fun LibraryBody(
 }
 
 /**
- * The action row shared by Feed and Library so both headers match:
- * Refresh, Downloads, then the profile avatar that opens Settings.
+ * The action row shared by Feed and Library: Search, (Feed: identify music), then the profile avatar
+ * that opens Settings. Refresh is pull-down; Downloads open themselves when offline.
  */
 @Composable
 internal fun JellyHeaderActions(
-    onRefresh: () -> Unit,
-    onOpenDownloads: () -> Unit,
     onOpenSettings: () -> Unit,
     onSearch: () -> Unit,
+    /** Feed only: the identify-music button. Null leaves it out. */
+    recognitionKey: String? = null,
+    onRecognised: (String) -> Unit = {},
 ) {
     val avatarUrl by hiltViewModel<ProfileAvatarViewModel>().avatarUrl.collectAsStateWithLifecycle()
-    HeaderActionIcon(Icons.Filled.Refresh, "Refresh", onRefresh)
     HeaderActionIcon(Icons.Filled.Search, "Search", onSearch)
-    HeaderActionIcon(Icons.Filled.Download, "Downloads", onOpenDownloads)
+    if (recognitionKey != null) {
+        com.lastwave.app.ui.recognition.MusicRecognitionButton(key = recognitionKey, onMatchSearch = onRecognised)
+    }
     IconButton(onClick = onOpenSettings) {
         com.lastwave.app.ui.home.ProfileAvatar(avatarUrl = avatarUrl, modifier = Modifier.size(38.dp))
     }
@@ -753,13 +767,37 @@ private fun AllSongsList(viewModel: LibraryViewModel) {
 // ---- detail pages ----------------------------------------------------------------------------
 
 @Composable
-private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewModel: LibraryViewModel, modifier: Modifier) {
+private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewModel: LibraryViewModel, modifier: Modifier, applyStatusBar: Boolean) {
     val item = detail.item
     val overrides by viewModel.favouriteOverrides.collectAsStateWithLifecycle()
     val isFavourite = overrides[item.id] ?: item.isFavorite
     val canFavourite = detail is LibraryDetail.Artist
     val addToPlaylist = LocalJellyAddToPlaylist.current
+    val isPlaylistPage = detail is LibraryDetail.Playlist
+    var showSyncIssues by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    if (showSyncIssues) SyncIssuesHost { showSyncIssues = false }
+    var showLeft by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    if (showLeft) ImportLeftoversDialog(item.id) { showLeft = false }
+    androidx.compose.runtime.DisposableEffect(item.id, isPlaylistPage) {
+        // Albums requested while this playlist is open get added to it once they reach the server.
+        if (isPlaylistPage) com.lastwave.app.data.requests.RequestContext.playlist = item.id to (item.name ?: "playlist")
+        onDispose {
+            if (com.lastwave.app.data.requests.RequestContext.playlist?.first == item.id) com.lastwave.app.data.requests.RequestContext.playlist = null
+        }
+    }
     val tracksNow by viewModel.detailTracks.collectAsStateWithLifecycle()
+    val artistState by viewModel.artistAlbums.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val pastHero by remember {
+        androidx.compose.runtime.derivedStateOf {
+            listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > with(density) { 260.dp.toPx() }
+        }
+    }
+    val player = LocalMusicPlayer.current
+    val chromeNow by player.chromeState.collectAsStateWithLifecycle()
+    val pageScope = androidx.compose.runtime.rememberCoroutineScope()
+    val loadingNow = tracksNow.loading || tracksNow.refreshing || (detail is LibraryDetail.Artist && artistState.loading)
     var menuOpen by remember { mutableStateOf(false) }
     var searching by rememberSaveable(item.id) { mutableStateOf(false) }
     var query by rememberSaveable(item.id) { mutableStateOf("") }
@@ -782,17 +820,8 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
         }
     }
     val collectionType = if (detail is LibraryDetail.Album) COLLECTION_ALBUM else COLLECTION_PLAYLIST
-    val headerActions: (@Composable () -> Unit)? =
-        if (detail is LibraryDetail.Album || detail is LibraryDetail.Playlist) {
-            @Composable {
-                HeaderActionIcon(
-                    if (isFavourite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                    if (isFavourite) "Remove from saved" else "Save",
-                ) { viewModel.toggleFavourite(item) }
-            }
-        } else null
     val downloadSlot: (@Composable () -> Unit)? =
-        if (detail is LibraryDetail.Album || detail is LibraryDetail.Playlist) {
+        if (detail is LibraryDetail.Album || detail is LibraryDetail.Playlist || detail is LibraryDetail.LikedSongs) {
             @Composable {
                 CollectionDownloadStatus(
                     itemId = item.id,
@@ -859,29 +888,72 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
         )
     }
 
-    val cover = rememberCoverColors(viewModel.coverUrl(session, item, 600))
+    val collageSeed = remember { System.nanoTime() }
+    val collage: List<String> = remember(tracksNow.tracks.size, detail is LibraryDetail.LikedSongs) {
+        if (detail !is LibraryDetail.LikedSongs) emptyList()
+        else tracksNow.tracks.mapNotNull { it.artworkUrl?.takeIf { u -> u.isNotBlank() } }.distinct()
+            .shuffled(kotlin.random.Random(collageSeed)).take(18)
+    }
+    val heroCoverUrl = viewModel.coverUrl(session, item, 800) ?: collage.firstOrNull()
+    val coverMain = rememberCoverColors(viewModel.coverUrl(session, item, 600) ?: collage.firstOrNull())
+    // Liked songs: blend colours from several of the covers shown, so the gradient and heart match the collage.
+    val likedB = rememberCoverColors(collage.getOrNull(1))
+    val likedC = rememberCoverColors(collage.getOrNull(2))
+    val cover = if (coverMain != null && detail is LibraryDetail.LikedSongs) {
+        CoverColors(
+            coverMain.top, (likedB ?: coverMain).top, coverMain.onColor, coverMain.onVariant,
+            accent = (likedC ?: likedB ?: coverMain).accent,
+        )
+    } else coverMain
     val pageBackground = MaterialTheme.colorScheme.background
     androidx.compose.runtime.CompositionLocalProvider(
+        LocalHeroCollage provides (collage.takeIf { it.isNotEmpty() }),
         LocalCoverColors provides cover,
         androidx.compose.material3.LocalContentColor provides (cover?.onColor ?: androidx.compose.material3.LocalContentColor.current),
     ) {
-    Column(
-        modifier.then(
-            if (cover != null) {
-                Modifier.background(
-                    androidx.compose.ui.graphics.Brush.verticalGradient(
-                        colorStops = arrayOf(0f to cover.top, 0.55f to pageBackground, 1f to pageBackground),
-                    ),
-                )
-            } else Modifier,
-        ),
-    ) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { viewModel.back() }) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+val overCover = (detail is LibraryDetail.Playlist && heroCoverUrl != null) || (detail is LibraryDetail.LikedSongs && collage.isNotEmpty())
+    val showScrolledHeader = overCover && pastHero
+    val locate: () -> Unit = {
+        val playing = chromeNow.current?.internalTrackId
+        val q = query.trim()
+        val list = if (q.isEmpty()) tracksNow.tracks else tracksNow.tracks.filter { t ->
+            t.title.contains(q, true) || t.artist.contains(q, true) || (t.album?.contains(q, true) == true)
+        }
+        val at = list.indexOfFirst { it.internalTrackId == playing }
+        if (playing != null && at >= 0) pageScope.launch { listState.animateScrollToItem(at + 1) }
+    }
+    @Composable
+    fun TopBar() {
+        val floating = overCover && !showScrolledHeader
+        val barTint = if (floating) Color.White else androidx.compose.material3.LocalContentColor.current
+        val pillColor = if (floating) Color.Black.copy(alpha = 0.38f) else Color.Transparent
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = if (overCover) 12.dp else 4.dp, vertical = if (overCover) 4.dp else 0.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(
+                onClick = { viewModel.back() },
+                modifier = if (overCover) Modifier.size(42.dp).background(pillColor, CircleShape) else Modifier,
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = barTint, modifier = Modifier.size(if (overCover) 22.dp else 24.dp))
             }
             // The search bar grows leftwards out of the search icon.
             Box(Modifier.weight(1f).padding(horizontal = 4.dp), contentAlignment = Alignment.CenterEnd) {
+                // Scrolled past the header: the playlist's cover and name sit in the bar.
+                if (showScrolledHeader && !searching) {
+                    Row(Modifier.align(Alignment.CenterStart), verticalAlignment = Alignment.CenterVertically) {
+                        CoverImage(heroCoverUrl, RoundedCornerShape(8.dp), Modifier.size(32.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            item.name.orEmpty(),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = barTint,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 androidx.compose.animation.AnimatedVisibility(
                     visible = searching,
                     enter = androidx.compose.animation.expandHorizontally(expandFrom = Alignment.End) + androidx.compose.animation.fadeIn(),
@@ -891,26 +963,56 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                 }
             }
             if (editing) TextButton(onClick = { editing = false }) { Text("Done") }
+            // Loading indicator: the server is still sending songs. Sits beside the pill, not inside it.
+            if (loadingNow) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = barTint,
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = pillColor,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (showScrolledHeader && tracksNow.tracks.isNotEmpty()) {
+                        androidx.compose.material3.FilledTonalIconButton(
+                            onClick = locate,
+                            shape = CircleShape,
+                            modifier = Modifier.size(36.dp),
+                        ) { Icon(Icons.Rounded.MyLocation, contentDescription = "Locate current song", modifier = Modifier.size(18.dp)) }
+                        Spacer(Modifier.width(4.dp))
+                    }
             if (!searching && (detail is LibraryDetail.Playlist || detail is LibraryDetail.Album || detail is LibraryDetail.LikedSongs)) {
-                IconButton(onClick = { searching = true }) {
-                    Icon(Icons.Filled.Search, contentDescription = "Search this list")
+                IconButton(onClick = { searching = true }, modifier = if (overCover) Modifier.size(42.dp) else Modifier) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search this list", tint = barTint)
                 }
             }
-            if (canFavourite) {
-                IconButton(onClick = { viewModel.toggleFavourite(item) }) {
+            if (canFavourite || detail is LibraryDetail.Album || detail is LibraryDetail.Playlist) {
+                IconButton(onClick = { viewModel.toggleFavourite(item) }, modifier = if (overCover) Modifier.size(42.dp) else Modifier) {
                     Icon(
                         if (isFavourite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                         contentDescription = if (isFavourite) "Remove from saved" else "Save",
+                        tint = barTint,
                     )
                 }
             }
-            if (detail is LibraryDetail.Playlist || detail is LibraryDetail.Album) {
+            if (detail is LibraryDetail.Playlist || detail is LibraryDetail.Album || detail is LibraryDetail.LikedSongs) {
                 Box {
-                    IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                    IconButton(onClick = { menuOpen = true }, modifier = if (overCover) Modifier.size(42.dp) else Modifier) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = barTint)
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        if (detail is LibraryDetail.Album) {
+                        if (detail is LibraryDetail.LikedSongs) {
+                            val failedCount by androidx.hilt.navigation.compose.hiltViewModel<SyncIssuesViewModel>(key = "sync-issues")
+                                .mirror.failures.collectAsStateWithLifecycle()
+                            DropdownMenuItem(
+                                text = { Text(if (failedCount.isEmpty()) "Sync issues" else "Sync issues (${failedCount.size})") },
+                                onClick = { menuOpen = false; showSyncIssues = true },
+                            )
+                        } else if (detail is LibraryDetail.Album) {
                             DropdownMenuItem(
                                 text = { Text("Add album to playlist") },
                                 enabled = tracksNow.tracks.isNotEmpty(),
@@ -928,6 +1030,11 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                             DropdownMenuItem(
                                 text = { Text("Change cover") },
                                 onClick = { menuOpen = false; coverPicker.launch("image/*") },
+                            )
+                            val leftCount = remember(item.id, menuOpen) { ImportLeftovers.count(context, item.id) }
+                            if (leftCount > 0) DropdownMenuItem(
+                                text = { Text("Unmatched songs ($leftCount)") },
+                                onClick = { menuOpen = false; showLeft = true },
                             )
                             DropdownMenuItem(
                                 text = { Text("Add all to another playlist") },
@@ -956,7 +1063,32 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                     }
                 }
             }
+        
+                }
+            }
         }
+    }
+    Box(
+        modifier.then(
+            if (cover != null && !overCover) {
+                Modifier.background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        colorStops = arrayOf(0f to cover.top, 0.55f to pageBackground, 1f to pageBackground),
+                    ),
+                )
+            } else if (cover != null) {
+                // Hero page: a fixed gradient from the cover's two colours into the page colour. It stays put
+                // behind the song list while the cover scrolls away.
+                Modifier.background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        colorStops = arrayOf(0f to cover.top, 0.4f to cover.second, 0.85f to pageBackground, 1f to pageBackground),
+                    ),
+                )
+            } else Modifier,
+        ),
+    ) {
+        Column(Modifier.fillMaxSize().then(if (applyStatusBar && !overCover) Modifier.statusBarsPadding() else Modifier)) {
+            if (!overCover) TopBar()
         when (detail) {
             is LibraryDetail.Artist -> ArtistAlbums(session, detail, viewModel)
             else -> {
@@ -974,6 +1106,10 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                     onRetry = viewModel::reloadDetail,
                     trailing = editTrailing,
                     query = query,
+                    onPlayed = { viewModel.recordPlay(detail) },
+                    heroBackdrop = if (overCover) heroCoverUrl else null,
+                    heroTint = cover?.top ?: pageBackground,
+                    listState = listState,
                     downloadSlot = downloadSlot,
                     rowActions = { index, track ->
                         buildList {
@@ -999,11 +1135,43 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
                             coverUrl = viewModel.coverUrl(session, item, 600),
                             heart = detail is LibraryDetail.LikedSongs,
                             hero = detail !is LibraryDetail.Album,
+                            overCover = overCover,
                             caption = if (detail is LibraryDetail.Album || detail is LibraryDetail.Playlist) songCountCaption(tracksState.tracks) else null,
-                            actions = headerActions,
                         )
                     },
                 )
+            }
+        }
+        }
+        if (overCover) {
+            // Over the cover the bar is see-through; scrolled, it fades in from the cover's colour.
+            val fadeColor = cover?.top ?: MaterialTheme.colorScheme.background
+            val fadeAlpha by androidx.compose.animation.core.animateFloatAsState(if (showScrolledHeader) 1f else 0f, label = "barFade")
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    // At the top of the page: a dark fade behind the status icons and the pills.
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.5f * (1f - fadeAlpha)),
+                            1f to Color.Transparent,
+                        ),
+                    )
+                    // Scrolled: the cover's colour, solid behind the icons and fading out just below them.
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            0f to fadeColor.copy(alpha = fadeAlpha),
+                            0.8f to fadeColor.copy(alpha = fadeAlpha),
+                            1f to fadeColor.copy(alpha = 0f),
+                        ),
+                    ),
+            ) {
+                Column {
+                    if (applyStatusBar) Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+                    TopBar()
+                    Spacer(Modifier.height(18.dp))
+                }
             }
         }
     }
@@ -1060,8 +1228,30 @@ private fun DetailHeader(
     caption: String? = null,
     /** Playlists get a large centred cover; albums keep the compact side-by-side layout. */
     hero: Boolean = false,
+    /** The cover is drawn behind this header (see [HeroBackdrop]): text goes left-aligned and white. */
+    overCover: Boolean = false,
     actions: (@Composable () -> Unit)? = null,
 ) {
+    if (overCover) {
+        Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 4.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (subtitle.isNotBlank()) {
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.85f))
+            }
+            if (caption != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(caption, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = Color.White.copy(alpha = 0.85f))
+            }
+        }
+        return
+    }
     val cc = LocalCoverColors.current
     val titleColor = cc?.onColor ?: MaterialTheme.colorScheme.onSurface
     val subColor = cc?.onVariant ?: MaterialTheme.colorScheme.onSurfaceVariant
@@ -1091,8 +1281,29 @@ private fun DetailHeader(
     }
 
     if (hero) {
+        val pageBackground = MaterialTheme.colorScheme.background
+        Box(Modifier.fillMaxWidth()) {
+            // Blurred copy of the cover behind the header, fading into the page (older phones show it unblurred).
+            if (!heart && coverUrl != null) {
+                coil.compose.AsyncImage(
+                    model = coverUrl,
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.matchParentSize()
+                        .blur(48.dp)
+                        .alpha(0.55f),
+                )
+                Box(
+                    Modifier.matchParentSize().background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            0f to androidx.compose.ui.graphics.Color.Transparent,
+                            1f to pageBackground,
+                        ),
+                    ),
+                )
+            }
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Cover()
@@ -1116,6 +1327,7 @@ private fun DetailHeader(
                 Spacer(Modifier.height(10.dp))
                 actions()
             }
+        }
         }
         return
     }
@@ -1141,6 +1353,70 @@ private fun DetailHeader(
                 Spacer(Modifier.height(10.dp))
                 actions()
             }
+        }
+    }
+}
+
+/**
+ * Playlist header backdrop: the cover fills the area behind the title and action row, then fades away so
+ * the page's cover-colour gradient shows through behind the song list.
+ */
+@Composable
+private fun HeroBackdrop(coverUrl: String, tint: Color, content: @Composable () -> Unit) {
+    val page = MaterialTheme.colorScheme.background
+    // The cover fades to transparent, so the page's fixed cover-colour gradient shows through underneath.
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+        // The whole cover is shown (a square as wide as the screen), fading out at its bottom edge.
+        val square = maxWidth
+        Box(Modifier.fillMaxWidth().heightIn(min = square)) {
+            val fadeMask = Modifier
+                .fillMaxWidth()
+                .height(square)
+                .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+                .drawWithContent {
+                    drawContent()
+                    drawRect(
+                        brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                            0f to Color.Black, 0.68f to Color.Black, 1f to Color.Transparent,
+                        ),
+                        blendMode = androidx.compose.ui.graphics.BlendMode.DstIn,
+                    )
+                }
+            val collageUrls = LocalHeroCollage.current
+            if (collageUrls != null) {
+                StickerCollage(
+                    collageUrls,
+                    LocalCoverColors.current?.accent?.takeIf { it != Color.Unspecified } ?: MaterialTheme.colorScheme.primary,
+                    Modifier.matchParentSize()
+                        .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+                        .drawWithContent {
+                            drawContent()
+                            drawRect(
+                                brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                    0f to Color.Black, 0.8f to Color.Black, 1f to Color.Transparent,
+                                ),
+                                blendMode = androidx.compose.ui.graphics.BlendMode.DstIn,
+                            )
+                        },
+                )
+            } else coil.compose.AsyncImage(
+                model = coverUrl,
+                contentDescription = null,
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = fadeMask,
+            )
+            // Keeps white text readable on any cover.
+            Box(
+                Modifier.fillMaxWidth().height(square).background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.40f),
+                        0.3f to Color.Black.copy(alpha = 0.08f),
+                        0.65f to Color.Black.copy(alpha = 0.35f),
+                        1f to Color.Transparent,
+                    ),
+                ),
+            )
+            Column(Modifier.align(Alignment.BottomStart)) { content() }
         }
     }
 }
@@ -1189,11 +1465,15 @@ private fun TrackList(
     trailing: (@Composable (Int) -> Unit)? = null,
     downloadSlot: (@Composable () -> Unit)? = null,
     query: String = "",
+    onPlayed: () -> Unit = {},
+    /** Cover shown behind the header and the action row, fading out below it (playlists). */
+    heroBackdrop: String? = null,
+    heroTint: Color = Color.Unspecified,
+    listState: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
     header: (@Composable () -> Unit)?,
 ) {
     val player = LocalMusicPlayer.current
     val chrome by player.chromeState.collectAsStateWithLifecycle()
-    val listState = rememberLazyListState()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     // Searching keeps each song's real position, so edit actions still hit the right entry.
@@ -1206,53 +1486,62 @@ private fun TrackList(
     }
     val shownTracks = remember(shown) { shown.map { it.value } }
 
+    val actionsRow: @Composable () -> Unit = {
+        // Same action row as the original playlist screen: shuffle, play, locate; download on the right.
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            androidx.compose.material3.FilledTonalIconButton(
+                onClick = { onPlayed(); player.playQueue(state.tracks, state.tracks.indices.random(), sourceLabel, startShuffled = true) },
+                shape = CircleShape,
+                modifier = Modifier.size(50.dp),
+            ) { Icon(Icons.Filled.Shuffle, contentDescription = "Shuffle", modifier = Modifier.size(22.dp)) }
+            Button(
+                onClick = { onPlayed(); player.playQueue(state.tracks, 0, sourceLabel, startShuffled = false) },
+                shape = CircleShape,
+                modifier = Modifier.height(50.dp),
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(26.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Play", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+            androidx.compose.material3.FilledTonalIconButton(
+                onClick = {
+                    haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.ContextClick)
+                    val playing = chrome.current?.internalTrackId
+                    val at = shown.indexOfFirst { it.value.internalTrackId == playing }
+                    if (playing != null && at >= 0) {
+                        scope.launch { listState.animateScrollToItem(at + (if (heroBackdrop != null && header != null) 1 else (if (header != null) 1 else 0) + 1)) }
+                    }
+                },
+                shape = CircleShape,
+                modifier = Modifier.size(50.dp),
+            ) {
+                Icon(Icons.Rounded.MyLocation, contentDescription = "Locate current song", modifier = Modifier.size(22.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            downloadSlot?.invoke()
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = FloatingNavDefaults.contentBottomPadding()),
     ) {
-        if (header != null) item(key = "header") { header() }
-
-        if (state.tracks.isNotEmpty()) {
-            item(key = "actions") {
-                // Same action row as the original playlist screen: shuffle, play, locate; download on the right.
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    androidx.compose.material3.FilledTonalIconButton(
-                        onClick = { player.playQueue(state.tracks, state.tracks.indices.random(), sourceLabel, startShuffled = true) },
-                        shape = CircleShape,
-                        modifier = Modifier.size(50.dp),
-                    ) { Icon(Icons.Filled.Shuffle, contentDescription = "Shuffle", modifier = Modifier.size(22.dp)) }
-                    Button(
-                        onClick = { player.playQueue(state.tracks, 0, sourceLabel, startShuffled = false) },
-                        shape = CircleShape,
-                        modifier = Modifier.height(50.dp),
-                    ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(26.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Play", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    }
-                    androidx.compose.material3.FilledTonalIconButton(
-                        onClick = {
-                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.ContextClick)
-                            val playing = chrome.current?.internalTrackId
-                            val at = shown.indexOfFirst { it.value.internalTrackId == playing }
-                            if (playing != null && at >= 0) {
-                                scope.launch { listState.animateScrollToItem(at + (if (header != null) 1 else 0) + 1) }
-                            }
-                        },
-                        shape = CircleShape,
-                        modifier = Modifier.size(50.dp),
-                    ) {
-                        Icon(Icons.Rounded.MyLocation, contentDescription = "Locate current song", modifier = Modifier.size(22.dp))
-                    }
-                    Spacer(Modifier.weight(1f))
-                    downloadSlot?.invoke()
+        if (heroBackdrop != null && header != null) {
+            item(key = "hero") {
+                HeroBackdrop(heroBackdrop, heroTint) {
+                    header()
+                    if (state.tracks.isNotEmpty()) actionsRow()
                 }
             }
+        } else {
+            if (header != null) item(key = "header") { header() }
+            if (state.tracks.isNotEmpty()) item(key = "actions") { actionsRow() }
         }
 
         when {
@@ -1284,10 +1573,20 @@ private fun TrackList(
                     actions = rowActions(iv.index, iv.value),
                     trailing = if (trailing != null) { @Composable { trailing(iv.index) } } else null,
                 ) {
+                    onPlayed()
                     player.playQueue(shownTracks, pos, sourceLabel, startShuffled = false)
                 }
             }
         }
+    }
+        // Kept clear of the header at the top and of the mini player / nav bar at the bottom.
+        FastScrollbar(
+            listState,
+            Modifier.align(Alignment.CenterEnd).padding(
+                top = androidx.compose.foundation.layout.WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 64.dp,
+                bottom = FloatingNavDefaults.contentBottomPadding(),
+            ),
+        )
     }
 }
 

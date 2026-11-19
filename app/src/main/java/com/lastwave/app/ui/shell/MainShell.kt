@@ -134,6 +134,9 @@ import com.lastwave.app.ui.common.PredictiveBackScreen
 import com.lastwave.app.ui.common.adaptiveContentWidth
 import com.lastwave.app.ui.feed.FeedScreen
 import com.lastwave.app.ui.home.HomeScreen
+import com.lastwave.app.ui.player.LocalChromeCollapse
+import com.lastwave.app.ui.player.collapsedNavPill
+import com.lastwave.app.ui.player.collapsingNavBar
 import com.lastwave.app.ui.player.LocalMiniPlayerScrollClearance
 import com.lastwave.app.ui.playlist.PlaylistScreen
 import androidx.compose.foundation.shape.CornerBasedShape
@@ -274,103 +277,6 @@ fun MainShell(
             selectedTabIndex = pagerState.settledPage
         }
     }
-    val updateInfo by mainShellViewModel.updateInfo.collectAsStateWithLifecycle()
-    val showUpdateBanner = updateInfo.isUpdateAvailable && !updateInfo.isDismissed
-    val ytConnection by mainShellViewModel.ytConnection.collectAsStateWithLifecycle()
-    val settings by mainShellViewModel.settings.collectAsStateWithLifecycle(initialValue = null)
-    var promptDismissedThisSession by rememberSaveable { mutableStateOf(false) }
-    var joinSupportDismissedThisSession by rememberSaveable { mutableStateOf(false) }
-
-    val currentSettings = settings
-    val shouldShowJoinSupport = currentSettings != null &&
-        !currentSettings.hasDismissedJoinSupportPrompt &&
-        !joinSupportDismissedThisSession
-
-    if (shouldShowJoinSupport) {
-        JoinSupportDialog(
-            onDismiss = {
-                mainShellViewModel.setDismissedJoinSupportPrompt(true)
-                joinSupportDismissedThisSession = true
-            },
-        )
-    }
-
-    val shouldShowLoginPrompt = currentSettings != null &&
-        !shouldShowJoinSupport &&
-        !ytConnection.isConnected &&
-        !currentSettings.suppressYouTubeLoginPrompt &&
-        !promptDismissedThisSession
-
-    if (shouldShowLoginPrompt) {
-        var dontShowAgain by remember { mutableStateOf(false) }
-        AlertDialog(
-            onDismissRequest = {
-                if (dontShowAgain) mainShellViewModel.setSuppressYouTubeLoginPrompt(true)
-                promptDismissedThisSession = true
-            },
-            shape = RoundedCornerShape(28.dp),
-            containerColor = if (LocalLiquidGlass.current) {
-                MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            },
-            title = {
-                Text(
-                    text = "Get better recommendations",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Text(
-                        text = "Log in to YouTube Music, or create a free account, to get personalized songs and queues.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { dontShowAgain = !dontShowAgain }
-                            .padding(vertical = 4.dp),
-                    ) {
-                        Checkbox(
-                            checked = dontShowAgain,
-                            onCheckedChange = { dontShowAgain = it },
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "Don't show again",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (dontShowAgain) mainShellViewModel.setSuppressYouTubeLoginPrompt(true)
-                        promptDismissedThisSession = true
-                        onOpenYouTubeLogin()
-                    },
-                    shape = RoundedCornerShape(20.dp),
-                ) {
-                    Text("Take me to YT Music login")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        if (dontShowAgain) mainShellViewModel.setSuppressYouTubeLoginPrompt(true)
-                        promptDismissedThisSession = true
-                    },
-                ) {
-                    Text("OK, thanks")
-                }
-            },
-        )
-    }
 
     val backgroundColor = MaterialTheme.colorScheme.background
     val hideNavTabs = com.lastwave.app.ui.theme.LocalHideNavTabs.current
@@ -386,9 +292,31 @@ fun MainShell(
         }
     } else null
     val navGlass = isLiquidGlassBackdropSupported()
+    val chromeCollapse = LocalChromeCollapse.current
+    // Each tab keeps its own scroll offset: a compact bar carried onto a tab
+    // resting at its top would have nothing to scroll back up to expand it.
+    LaunchedEffect(chromeCollapse, pagerState.settledPage) { chromeCollapse?.expand() }
 
     Box(Modifier.fillMaxSize()) {
         val feedIndex = tabs.indexOf(MainTab.FEED)
+        // The header Downloads icon opens the Downloaded tab of the Library instead of the YouTube downloads screen.
+        val savedLibrary: com.lastwave.app.ui.library.LibraryViewModel = hiltViewModel(key = "library-SAVED")
+        val openJellyDownloads: () -> Unit = {
+            savedLibrary.start(com.lastwave.app.ui.library.LibraryMode.SAVED)
+            savedLibrary.selectTab(com.lastwave.app.ui.library.LibraryTab.DOWNLOADED)
+            scope.launch { pagerState.animateScrollToPage(tabs.indexOf(MainTab.PLAYLISTS)) }
+        }
+        // "Go to artist/album" from Now Playing or a menu: open it in the Library tab.
+        val jellyNavigator = hiltViewModel<com.lastwave.app.ui.shell.JellyNavHolder>().navigator
+        val pendingDetail by jellyNavigator.pending.collectAsStateWithLifecycle()
+        LaunchedEffect(pendingDetail) {
+            val detail = pendingDetail ?: return@LaunchedEffect
+            savedLibrary.start(com.lastwave.app.ui.library.LibraryMode.SAVED)
+            savedLibrary.selectTab(com.lastwave.app.ui.library.LibraryTab.PLAYLISTS)
+            savedLibrary.open(detail)
+            jellyNavigator.consume()
+            pagerState.animateScrollToPage(tabs.indexOf(MainTab.PLAYLISTS))
+        }
         HorizontalPager(
             state = pagerState,
             // Keep every tab composed. With 1, jumping Playlists -> Home
@@ -397,7 +325,9 @@ fun MainShell(
             // was rebuilt the same way from the far tab. Only 3 tabs, and
             // off-screen pages are not drawn, so this is cheap.
             beyondViewportPageCount = tabs.size - 1,
-            modifier = Modifier.fillMaxSize().then(
+            modifier = Modifier.fillMaxSize()
+                .then(if (chromeCollapse != null) Modifier.nestedScroll(chromeCollapse.connection) else Modifier)
+                .then(
                 if (navigationLiquidState != null) {
                     Modifier.liquefiable(navigationLiquidState).background(backgroundColor)
                 } else {
@@ -417,21 +347,10 @@ fun MainShell(
                     onBack = { scope.launch { pagerState.animateScrollToPage(feedIndex) } },
                 ) {
                     when (tabs[page]) {
-                        MainTab.FEED -> FeedScreen(
+                        MainTab.FEED -> com.lastwave.app.ui.feed.JellyfinFeedHome(
+                            active = isCurrent,
                             onOpenSettings = onOpenSettings,
-                            onOpenSearch = onOpenSearch,
-                            onOpenDiscover = onOpenDiscover,
-                            onOpenPlaylist = onOpenPlaylist,
-                            onOpenFeedPlaylist = onOpenFeedPlaylist,
-                            onOpenGenerator = onOpenGenerator,
-                            onOpenFriends = onOpenFriends,
-                            onOpenFriendProfile = onOpenFriendProfile,
-                            onOpenNewReleases = onOpenNewReleases,
-                            onOpenDownloads = onOpenDownloads,
-                            onOpenPodcasts = onOpenPodcasts,
-                            onOpenPodcastShow = onOpenPodcastShow,
-                            onOpenYouTubeLogin = onOpenYouTubeLogin,
-                            feedTapEvents = feedTapEvents,
+                            onOpenDownloads = openJellyDownloads,
                         )
                         MainTab.STATS -> HomeScreen(
                             onOpenSettings = onOpenSettings,
@@ -441,34 +360,20 @@ fun MainShell(
                             onOpenFriends = onOpenFriends,
                             onOpenDownloads = onOpenDownloads,
                         )
-                        MainTab.PLAYLISTS -> PlaylistScreen(
+                        MainTab.PLAYLISTS -> com.lastwave.app.ui.library.LibraryScreen(
+                            active = isCurrent,
                             onOpenPlaylist = onOpenPlaylist,
                             onOpenFeedPlaylist = onOpenFeedPlaylist,
                             onOpenGenerator = onOpenGenerator,
+                            onOpenSettings = onOpenSettings,
+                            onOpenDownloads = openJellyDownloads,
                         )
                     }
                 }
             }
         }
 
-        // App update prompt banner (only shown on app open when an update is available and not dismissed)
-        AnimatedVisibility(
-            visible = showUpdateBanner,
-            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .adaptiveContentWidth(maxWidth = 600.dp)
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .zIndex(10f),
-        ) {
-            UpdatePromptCard(
-                version = updateInfo.latestVersion,
-                onUpdate = { mainShellViewModel.openUpdate(context) },
-                onDismiss = { mainShellViewModel.dismissUpdate(updateInfo.latestVersion) },
-            )
-        }
+        // The update prompt is the app-wide dialog (ui/update/AppUpdateDialog), opened on launch.
 
         val bottomNavSlot = com.lastwave.app.ui.player.LocalBottomNavSlot.current
         val md3NavBar = LocalMd3NavBar.current
@@ -540,25 +445,32 @@ fun MainShell(
             if (!hideNavTabs) {
                 bottomNavSlot.value = { material3NavigationEnabled ->
                     Box(Modifier.fillMaxSize()) {
+                        val collapse = LocalChromeCollapse.current
+                        val collapseProgress = collapse?.progress ?: { 0f }
+                        val barModifier = Modifier.align(Alignment.BottomCenter).collapsingNavBar(collapseProgress)
+                        val pillModifier = Modifier.align(Alignment.BottomStart).collapsedNavPill(collapseProgress)
+                        val expand = { collapse?.expand(); Unit }
                         if (navigationLiquidState != null) {
+                            val items = tabs.map { tab ->
+                                LiquidNavigationItem(
+                                    label = androidx.compose.ui.res.stringResource(tab.labelRes),
+                                    icon = tab.icon(),
+                                )
+                            }
                             LiquidNavigationBar(
                                 liquidState = navigationLiquidState,
-                                items = tabs.map { tab ->
-                                    LiquidNavigationItem(
-                                        label = androidx.compose.ui.res.stringResource(tab.labelRes),
-                                        icon = tab.icon(),
-                                    )
-                                },
+                                items = items,
                                 selectedIndex = currentSelectedIndex,
                                 onSelect = currentOnLiquidSelect,
                                 onScrubSelect = currentOnScrubSelect,
-                                modifier = Modifier.align(Alignment.BottomCenter),
+                                modifier = barModifier,
                                 style = if (material3NavigationEnabled) {
                                     LiquidNavigationStyle.Material3
                                 } else {
                                     LiquidNavigationStyle.Tabs
                                 },
                             )
+                            LiquidNavigationPill(navigationLiquidState, items[currentSelectedIndex], expand, pillModifier)
                         } else {
                             FloatingNavBar(
                                 backdrop = navigationBackdrop,
@@ -566,8 +478,9 @@ fun MainShell(
                                 selectedIndex = currentSelectedIndex,
                                 onSelect = currentOnSelect,
                                 onOpenGenerator = currentOnOpenGenerator,
-                                modifier = Modifier.align(Alignment.BottomCenter),
+                                modifier = barModifier,
                             )
+                            FloatingNavPill(navigationBackdrop, tabs[currentSelectedIndex], expand, pillModifier)
                         }
                     }
                 }
@@ -579,72 +492,6 @@ fun MainShell(
     }
 }
 
-@Composable
-private fun UpdatePromptCard(
-    version: String,
-    onUpdate: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        shadowElevation = 8.dp,
-        tonalElevation = 6.dp,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier.padding(start = 16.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.CloudDownload,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.size(24.dp),
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = androidx.compose.ui.res.stringResource(com.lastwave.app.R.string.update_available),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-                Text(
-                    text = androidx.compose.ui.res.stringResource(com.lastwave.app.R.string.update_ready_to_install, version),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
-                )
-            }
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(14.dp))
-                    .clickable(onClick = onUpdate),
-            ) {
-                Text(
-                    text = androidx.compose.ui.res.stringResource(com.lastwave.app.R.string.update),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                )
-            }
-            IconButton(
-                onClick = onDismiss,
-                modifier = Modifier.size(28.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Close,
-                    contentDescription = androidx.compose.ui.res.stringResource(com.lastwave.app.R.string.dismiss_update),
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-        }
-    }
-}
 
 @Composable
 private fun FloatingNavBar(
@@ -849,6 +696,38 @@ private fun FloatingNavBar(
                     }
                 }
             }
+        }
+    }
+}
+
+/** The collapsed dock: one glass circle holding only the active tab's icon. */
+@Composable
+private fun FloatingNavPill(
+    backdrop: LayerBackdrop?,
+    tab: MainTab,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val liquidGlass = LocalLiquidGlass.current
+    Surface(
+        onClick = onClick,
+        shape = PillShape,
+        color = liquidGlassContainerColor(
+            MaterialTheme.colorScheme.surfaceContainerHigh,
+            enabled = liquidGlass,
+            backdrop = backdrop,
+        ),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = if (liquidGlass) 0.dp else 6.dp,
+        shadowElevation = if (liquidGlass) 0.dp else 12.dp,
+        modifier = modifier.liquidGlassChrome(CircleShape, liquidGlass, LiquidGlassPreset.BottomNavigation, backdrop),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = tab.icon(),
+                contentDescription = androidx.compose.ui.res.stringResource(tab.labelRes),
+                modifier = Modifier.size(24.dp),
+            )
         }
     }
 }

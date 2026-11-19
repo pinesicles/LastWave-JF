@@ -631,6 +631,11 @@ fun SettingsScreen(
                 when (tab) {
                     null -> {
                         item { JellyfinSettingsSection() }
+                        item { DroppedNeedleSettingsSection() }
+                        item { DataUsageSettingsSection() }
+                        item { ListenBrainzSettingsSection() }
+                        item { LikesSyncSettingsSection() }
+                        item { CarLyricsSettingsSection() }
 
                         item {
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -999,6 +1004,20 @@ fun SettingsScreen(
                                 onCheckedChange = viewModel::setKeepLyricsScreenAwake,
                                 position = position,
                                 isHighlighted = (highlightedSettingId == "audio.keep_lyrics_screen_awake"),
+                            )
+                        }
+                        add { position ->
+                            val awakeCtx = androidx.compose.ui.platform.LocalContext.current
+                            val awakeOn by NowPlayingAwake.flow(awakeCtx).collectAsStateWithLifecycle()
+                            SettingsToggleCard(
+                                icon = Icons.Filled.Visibility,
+                                iconContainer = MaterialTheme.colorScheme.secondaryContainer,
+                                iconTint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                title = "Keep screen on in Now Playing",
+                                subtitle = "Stops the screen sleeping while the full player is open",
+                                checked = awakeOn,
+                                onCheckedChange = { NowPlayingAwake.set(awakeCtx, it) },
+                                position = position,
                             )
                         }
                         add { position ->

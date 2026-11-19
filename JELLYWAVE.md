@@ -46,3 +46,43 @@ Offline-first (weak 2.4 GHz Wi-Fi). Server is Jellyfin 12.4.
 - NEXT (step 19): outside sources (YouTube) in Feed shelf + Search section, play + local playlists; request client later (service TBD, Spotify remote dropped).
 - Step 19 DONE: outside sources. OutsideSources.kt: Feed search "Outside your library" section (tap to search YouTube), Feed "From YouTube" shelf (OG My Recommendations, online only). Outside songs play, add to LOCAL playlists only (Jellyfin playlists hold server songs only). Source badge. JellyTrackRow isPlaying now falls back to videoId.
 - NEXT: request client (service TBD); pending requests auto-add to Jellyfin playlists via ImportMatcher.
+- Step 21: header slimmed to Search, (Feed only) identify-music, profile avatar. Refresh is pull-down (JellyPullRefresh), Downloads icon removed (offline is automatic), no identify button in Library. Upstream merged at Nov 15 (nav collapse, recognition).
+- Step 22: Auto quality chosen at play time (PlaybackTrackHook + JellyPlayTimeQuality; hooks in MusicPlayer.playQueue/playNext/addToQueue). Pull-to-refresh tied to real loading (LibraryViewModel.refreshing, feed state.loading). Playlist hero = blurred-cover backdrop; heart moved into top bar between search and menu for albums/playlists. Canvases confirmed working.
+- Step 23: Feed top = tile grid (Liked songs + most played 2 + recent, 2/4/6 tiles; falls back to recently added). Plays are recorded locally in JellyRecents (album/playlist plays only). Shuffle all moved to Library half of Feed (ShuffleAllBar). Feed/Library section chips fill width (JellyChipsBar fill). Artist-suggestion shelves moved to the bottom, above YouTube.
+- Step 24: playlist page like OG: cover as backdrop behind title + action row (HeroBackdrop), fading into the cover-colour page gradient behind the songs; back button and search/heart/menu are translucent pills overlaid on the cover (TopBar local composable, overCover). Playlists without a cover keep the centred layout.
+- Step 25: swipe right on a Jellyfin-list song row = play next IN ORDER (MusicPlayer.playNextInOrder, afterQueued offset on playNext; long-press Play next unchanged). Space above the Feed tiles.
+- Step 26: playlist hero closer to OG: full square cover (not cropped) fading at its bottom; bar becomes a cover-colour fade with cover+name+locate once scrolled past the hero; smaller pills (42dp); status bar area is part of the page (cover/gradient) instead of a solid strip; download button same colour as shuffle/locate; small server-loading spinner beside the pill (TracksState.refreshing for saved-copy-while-loading).
+- Step 27: swipe-to-play-next fixed: custom drag fires once on release (was repeating while held); ordering counts swipe-added songs from the real ExoPlayer queue using internalTrackId (was matching on stream URL, so last swipe played first).
+- Step 28: swipe play-next order now also works under shuffle (placeInsertedIndexInShuffleOrder afterQueued, run counted in play order); active player mode buttons (shuffle etc.) pick white/black by contrast when the artwork-tinted pair is dark-on-dark.
+- Step 29: hero polish round 2 — status-bar scrim, scrolled-bar fade covers icons, back button 12dp inset, cover fades into own colour then page colour.
+- Step 30: DroppedNeedle request server (data/requests, ui/requests, settings section). 'Request on server' in Feed search + outside rows via LocalRequestAlbum.
+- Step 31: request actions in hold menus (YouTube shelf, search rows, track menu), YouTube artist/album search shelves, shuffle active colour over artwork, fixed two-colour cover gradient on playlist hero page.
+- Step 32: data monitor (DataMeter network interceptor + canvas listener, per-purpose Wi-Fi/mobile totals) and data saver (128 kbps cap, no canvas/music video, no YouTube shelf). Settings: 'Data' section.
+- Step 33a: stop un-routing the USB DAC between tracks (srcRate=null) - fixes clipped intro on auto transitions.
+- Step 33: ListenBrainz scrobbling (data/listenbrainz, settings section, hook in ScrobbleRepository); YouTube hold menus as bottom sheets (OutsideActionSheet) + nicer search cards; See on YouTube (youtubeOnly nav flag); Find on server (LocalFindOnServer) in sheets, rows and track menu.
+- Step 34: import 'Request missing': not-found songs grouped by album, requested on the request server (ImportRequestMissing.kt, RequestsViewModel.requestBestMatch).
+- Step 35: Discover shelves in the Feed from DroppedNeedle (DnShelf, DnAuth cover auth, DiscoverShelves.kt).
+- Step 36: RequestWatcher (rescan Jellyfin on import, auto-add requested albums to the playlist they were requested from; RequestContext set by the playlist page).
+- Step 37: Library search shows outside sources; per-playlist shuffle (PlaylistShuffleMemory); keep screen on in Now Playing (NowPlayingAwake).
+- Step 38: Jellyfin favourites seed the From YouTube shelf (extraSeeds in fetchRecommendations).
+- Step 39: Android Auto lyrics (CarLyrics.kt): current synced line shown in artist/album metadata while Auto is connected; setting in 'Android Auto' section.
+- Step 40: ListenBrainz recommendations shelf in the Feed (ListenBrainzShelf.kt, ListenBrainzClient.recommendations).
+- Step 41: LikeSync (hearts -> ListenBrainz love + DroppedNeedle star), 'Likes sync' settings section, liked songs not on server -> RequestMissingDialog (YouTube likes + Spotify via request server).
+- Step 42: missing-liked-songs list is saved (LikeSync.missing), requested albums drop out, Re-check button.
+- Step 43: two-way likes sync (LikeMirror: Jellyfin/Spotify/ListenBrainz/app likes, per-service snapshots, removals toggle, preview before apply, auto-sync). Spotify via sp_dc token + api.spotify.com (SpotifyLibrary).
+- Step 44: sync issues icon (badge) in Feed/Library header; failed like-sync matches listed with Choose match / Request / Ignore (SyncIssues.kt, LikeMirror.failures).
+- Step 45: sync preview rows open a list of what is added and from where; Spotify liked read raised from 1000 to 10000.
+- Step 46: likeKey (title base + first artist) fixes false 'missing' matches; one-way sync modes (source -> targets, optional remove extras); preview shows raw vs unique counts.
+- Step 47: copy Jellyfin playlists to DroppedNeedle (PlaylistSync, PlaylistSyncDialog); additive only, in 'Likes sync' section.
+- Step 48: likes sync runs as WorkManager background work with a foreground notification (LikeSyncWorker); apply no longer tied to the Settings screen.
+- Step 49: findSong (title then artist, scored) used by sync/find-on-server; Liked songs downloadable (id liked-songs); sticker-collage hero with heart on Liked songs (LikedCollage.kt).
+- Step 50: import keeps unmatched songs per playlist (menu: Unmatched songs → Search library again / Request); import matcher now falls back to title-then-artist findSong.
+- Step 51: saved playlist syncs (Jellyfin hub ↔ DroppedNeedle one/both ways, Spotify read-in, removals rule, 6-hourly worker, Sync now).
+- Step 52: artist-scoped song matching, full-hero sticker collage with cover-matched colours, 12h cache for Feed YouTube recommendations.
+- Step 53: Sync issues moved into the Liked songs ⋮ menu with 'Search library again'; draggable fast-scroll bar on playlist/album/liked lists.
+- Step 54: Jellyfin match picker pre-fills title only (Jellyfin search ignores artist names).
+- Step 55: sound-alike matching across scripts (Cyrillic vs romanised) via whole-library index fallback in findSong.
+- Step 56: scrollbar inset below header and above mini player.
+- Step 57: playlist import creates then adds in batches (fixes empty playlists); Last.fm 'Because you listen to' shelf; rearrange/hide Feed shelves.
+- Step 58: keep-awake also sets the window flag and only while playing.
+- Step 58: 'Turn Canvas on/off' row in the Now Playing track menu (same setting as Settings).

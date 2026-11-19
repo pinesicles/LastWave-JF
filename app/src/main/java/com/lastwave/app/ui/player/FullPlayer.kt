@@ -392,6 +392,7 @@ internal fun FullPlayer(
     val isTabletLandscape = isLandscape && (isTablet || configuration.screenWidthDp >= 600)
     val isCanvasActive = canvasEnabled && canvas != null
     val syncedVideoVm: SyncedVideoViewModel = hiltViewModel()
+    val canvasToggleVm: CanvasToggleViewModel = hiltViewModel()
     val showSyncedVideo by syncedVideoVm.isVideoActive.collectAsStateWithLifecycle()
     val syncedVideoState by syncedVideoVm.uiState.collectAsStateWithLifecycle()
     val canWatchVideo = !syncedVideoVm.isVideoUnavailableFor(
@@ -1832,6 +1833,8 @@ internal fun FullPlayer(
             onPlayInLastWave = { player.play(track, sourceLabel = state.sourceLabel) },
             canWatchVideo = canWatchVideo,
             onWatchVideo = if (canWatchVideo) ({ syncedVideoVm.setVideoActive(true) }) else null,
+            onToggleCanvas = { canvasToggleVm.set(!canvasEnabled) },
+            canvasOn = canvasEnabled,
         )
     }
 

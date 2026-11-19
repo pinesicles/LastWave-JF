@@ -190,6 +190,10 @@ object ImportMatcher {
         s.split(Regex("\\s*(,|;|&|\\band\\b|feat\\.?|ft\\.?|x)\\s*", RegexOption.IGNORE_CASE))
             .map(::tokens).filter { it.isNotEmpty() }
 
+    /** The first credited artist's name as written, for looking the artist up. */
+    fun artistParts0(s: String): List<String> =
+        s.split(Regex("\\s*(,|;|&|\\bfeat\\.?|\\bft\\.?)\\s*", RegexOption.IGNORE_CASE)).map { it.trim() }.filter { it.isNotEmpty() }
+
     fun titleScore(a: String, b: String): Double {
         val x = baseTitle(a)
         val y = baseTitle(b)
@@ -230,3 +234,60 @@ object ImportMatcher {
     fun rank(src: ImportTrack, candidates: List<PlayableTrack>): List<PlayableTrack> =
         candidates.distinctBy { it.internalTrackId }.sortedByDescending { score(src, it) }
 }
+
+/**
+ * Compares text written in different scripts or romanisations (Russian in Cyrillic vs "mertvaya karyera"):
+ * both sides are turned into the same rough sound-alike spelling, then compared by edit distance.
+ */
+object LooseMatch {
+    private val CYR = mapOf(
+        'а' to "a", 'б' to "b", 'в' to "v", 'г' to "g", 'д' to "d", 'е' to "e", 'ё' to "e", 'ж' to "zh", 'з' to "z",
+        'и' to "i", 'й' to "y", 'к' to "k", 'л' to "l", 'м' to "m", 'н' to "n", 'о' to "o", 'п' to "p", 'р' to "r",
+        'с' to "s", 'т' to "t", 'у' to "u", 'ф' to "f", 'х' to "kh", 'ц' to "ts", 'ч' to "ch", 'ш' to "sh",
+        'щ' to "shch", 'ъ' to "", 'ы' to "y", 'ь' to "", 'э' to "e", 'ю' to "yu", 'я' to "ya",
+        'і' to "i", 'ї' to "yi", 'є' to "ye", 'ґ' to "g",
+    )
+
+    fun fold(raw: String): String {
+        val sb = StringBuilder()
+        for (ch in raw.lowercase()) sb.append(CYR[ch] ?: ch.toString())
+        var s = sb.toString().replace(Regex("[^\\p{L}\\p{N}]+"), "")
+        for ((a, b) in listOf(
+            "shch" to "S", "sh" to "S", "ch" to "C", "zh" to "Z", "kh" to "H", "ts" to "T",
+            "yu" to "U", "iu" to "U", "ju" to "U", "ya" to "A", "ia" to "A", "ja" to "A", "yo" to "O", "jo" to "O",
+            "j" to "Z", "y" to "i", "w" to "v", "c" to "k", "q" to "k", "x" to "ks", "h" to "H",
+        )) s = s.replace(a, b)
+        return s.replace(Regex("(.)\\1+"), "$1")
+    }
+
+    private fun levenshtein(a: String, b: String): Int {
+        var prev = IntArray(b.length + 1) { it }
+        for (i in 1..a.length) {
+            val cur = IntArray(b.length + 1)
+            cur[0] = i
+            for (j in 1..b.length) {
+                cur[j] = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + if (a[i - 1] == b[j - 1]) 0 else 1)
+            }
+            prev = cur
+        }
+        return prev[b.length]
+    }
+
+    fun ratio(a: String, b: String): Double {
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        if (a == b) return 1.0
+        if (minOf(a.length, b.length) < 3) return 0.0
+        return 1.0 - levenshtein(a, b).toDouble() / maxOf(a.length, b.length)
+    }
+
+    fun titleRatio(a: String, b: String) = ratio(fold(ImportMatcher.baseTitle(a)), fold(ImportMatcher.baseTitle(b)))
+
+    /** Best match between any credited artist on each side. */
+    fun artistRatio(src: String, cand: List<String>): Double {
+        val sp = ImportMatcher.artistParts0(src).map { fold(ImportMatcher.norm(it)) }.filter { it.isNotEmpty() }
+        val cp = cand.flatMap { ImportMatcher.artistParts0(it) }.map { fold(ImportMatcher.norm(it)) }.filter { it.isNotEmpty() }
+        if (sp.isEmpty() || cp.isEmpty()) return 0.0
+        return sp.maxOf { x -> cp.maxOf { y -> ratio(x, y) } }
+    }
+}
+

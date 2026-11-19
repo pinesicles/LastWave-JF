@@ -6,8 +6,20 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 sealed interface ArtistAlbumNavTarget {
-    data class Artist(val name: String, val browseId: String? = null) : ArtistAlbumNavTarget
-    data class Album(val title: String, val artist: String = "", val browseId: String? = null) : ArtistAlbumNavTarget
+    /** JellyWave: true skips the Jellyfin library lookup and opens the YouTube Music page. */
+    val youtubeOnly: Boolean
+
+    data class Artist(
+        val name: String,
+        val browseId: String? = null,
+        override val youtubeOnly: Boolean = false,
+    ) : ArtistAlbumNavTarget
+    data class Album(
+        val title: String,
+        val artist: String = "",
+        val browseId: String? = null,
+        override val youtubeOnly: Boolean = false,
+    ) : ArtistAlbumNavTarget
 }
 
 /**
@@ -22,10 +34,10 @@ class ArtistAlbumNavigator @Inject constructor() {
     private var lastNavTimestamp = 0L
     private var lastNavTarget: ArtistAlbumNavTarget? = null
 
-    fun openArtist(name: String, browseId: String? = null) {
+    fun openArtist(name: String, browseId: String? = null, youtubeOnly: Boolean = false) {
         val trimmed = name.trim()
         if (trimmed.isBlank()) return
-        val target = ArtistAlbumNavTarget.Artist(trimmed, browseId?.takeIf(String::isNotBlank))
+        val target = ArtistAlbumNavTarget.Artist(trimmed, browseId?.takeIf(String::isNotBlank), youtubeOnly)
         val now = System.currentTimeMillis()
         if (target == lastNavTarget && now - lastNavTimestamp < 600L) {
             return
@@ -35,10 +47,10 @@ class ArtistAlbumNavigator @Inject constructor() {
         _events.tryEmit(target)
     }
 
-    fun openAlbum(title: String, artist: String = "", browseId: String? = null) {
+    fun openAlbum(title: String, artist: String = "", browseId: String? = null, youtubeOnly: Boolean = false) {
         val trimmedTitle = title.trim()
         if (trimmedTitle.isBlank()) return
-        val target = ArtistAlbumNavTarget.Album(trimmedTitle, artist.trim(), browseId?.takeIf(String::isNotBlank))
+        val target = ArtistAlbumNavTarget.Album(trimmedTitle, artist.trim(), browseId?.takeIf(String::isNotBlank), youtubeOnly)
         val now = System.currentTimeMillis()
         if (target == lastNavTarget && now - lastNavTimestamp < 600L) {
             return

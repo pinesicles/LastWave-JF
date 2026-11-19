@@ -179,7 +179,8 @@ class JellyDownloads @Inject constructor(
     }
 
     private suspend fun fetchItems(session: JellyfinSession, type: String, id: String): List<JfItem> =
-        if (type == COLLECTION_PLAYLIST) api.playlistTracks(session, id).items else api.albumTracks(session, id).items
+        if (id == "liked-songs") api.favoriteTracks(session).items // the Liked songs page: your Jellyfin favourites
+        else if (type == COLLECTION_PLAYLIST) api.playlistTracks(session, id).items else api.albumTracks(session, id).items
 
     /** Saves an album or playlist for offline use. Playlists start in "keep in sync" mode. */
     suspend fun download(item: JfItem, type: String) {

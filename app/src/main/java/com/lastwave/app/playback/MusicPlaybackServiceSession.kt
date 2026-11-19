@@ -351,6 +351,7 @@ internal fun MusicPlaybackService.publishSystemState(state: MusicPlayerState) {
             append(artworkUrl).append('|')
             append(artworkBitmap != null).append('|')
             append(isLiked)
+            append('|').append(CarLyrics.line)
             if (!state.isPlaying) append("|pos=").append(state.positionMs)
         }
         if (signature == systemStateSignature) return
@@ -367,8 +368,8 @@ internal fun MusicPlaybackService.publishSystemState(state: MusicPlayerState) {
                         track?.let { OriginOsMusicCard.mediaIdOf(state.currentIndex, it) } ?: state.currentIndex.toString(),
                     )
                     .putString(MediaMetadataCompat.METADATA_KEY_TITLE, track?.title.orEmpty())
-                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, track?.artist.orEmpty())
-                    .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, track?.album.orEmpty())
+                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, CarLyrics.line.takeIf { CarLyrics.mode == CarLyrics.ARTIST } ?: track?.artist.orEmpty())
+                    .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, CarLyrics.line.takeIf { CarLyrics.mode == CarLyrics.ALBUM } ?: track?.album.orEmpty())
                     .apply {
                         // Same artwork keys Media3 (and SimpMusic) publish: the
                         // cover URL in the three URI keys, only when there is one.

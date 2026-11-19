@@ -374,15 +374,24 @@ internal fun MusicPlayer.applyDacRoutingFor(sourceRateHz: Int?, streamCodec: Str
         } else {
             null
         }
-        val device = if (!exclusive && dac != null && dac.deviceId > 0 && (effectiveRateHz ?: 0) > 0) {
+        // An unknown source rate (the moment between tracks) must not un-route a DAC that is already routed:
+        // every route change makes Android rebuild the output, which swallowed the first seconds of the next track.
+        val alreadyRouted = dac != null && routedDacDeviceId != null && routedDacDeviceId == dac.deviceId
+        val device = if (!exclusive && dac != null && dac.deviceId > 0 && ((effectiveRateHz ?: 0) > 0 || alreadyRouted)) {
             findOutputDevice(dac.deviceId)
         } else {
             null
         }
+        val previousRoutedId = routedDacDeviceId
         routedDacDeviceId = device?.id
         audioSinks.forEach { sink ->
-            runCatching { sink.setPreferredDevice(if (exclusive) null else device) }
-            runCatching { sink.setOutputSampleRateOverride(if (isSpatial) null else effectiveRateHz) }
+            // Only touch the route when it actually changes (new sinks are routed when created).
+            if (exclusive || device?.id != previousRoutedId) {
+                runCatching { sink.setPreferredDevice(if (exclusive) null else device) }
+            }
+            if (!(effectiveRateHz == null && device != null)) {
+                runCatching { sink.setOutputSampleRateOverride(if (isSpatial) null else effectiveRateHz) }
+            }
             runCatching { sink.setExclusiveFallbackRateHz(fallbackHz, effectiveRateHz) }
         }
         android.util.Log.i(

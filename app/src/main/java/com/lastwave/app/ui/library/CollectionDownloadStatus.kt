@@ -72,7 +72,6 @@ internal fun CollectionDownloadStatus(
             complete -> FilledTonalIconButton(
                 onClick = onClick,
                 shape = CircleShape,
-                colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
                 modifier = Modifier.size(50.dp),
             ) { Icon(Icons.Filled.DownloadDone, contentDescription = "Downloaded", modifier = Modifier.size(22.dp)) }
             else -> FilledTonalIconButton(onClick = onClick, shape = CircleShape, modifier = Modifier.size(50.dp)) {

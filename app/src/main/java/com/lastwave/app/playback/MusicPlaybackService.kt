@@ -363,6 +363,7 @@ class MusicPlaybackService : MediaBrowserServiceCompat() {
                     publishNotification(state)
                     publishWidget(state)
                     publishOriginOsLyrics(state)
+                    publishCarLyrics(state)
                     publishWaveWidget(state)
                     publishCarBrowseState(state)
                     detectTransition(state)

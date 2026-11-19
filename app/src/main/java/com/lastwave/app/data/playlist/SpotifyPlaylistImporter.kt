@@ -390,7 +390,7 @@ class SpotifyPlaylistImporter @Inject constructor(
     /**
      * Fetches the user's Spotify Liked Songs collection via Pathfinder.
      */
-    suspend fun fetchLikedSongs(): ExternalPlaylistResult = withContext(Dispatchers.IO) {
+    suspend fun fetchLikedSongs(maxPages: Int = 20): ExternalPlaylistResult = withContext(Dispatchers.IO) {
         val token = spotifyAuthRepository.getPersonalToken()
             ?: throw IllegalStateException("Spotify account is not connected.")
         val clientToken = spotifyAuthRepository.getClientToken()
@@ -400,7 +400,7 @@ class SpotifyPlaylistImporter @Inject constructor(
         var totalCount = Int.MAX_VALUE
         var pages = 0
 
-        while (offset < totalCount && pages < 20) {
+        while (offset < totalCount && pages < maxPages) {
             pages++
             val variables = """{"offset":$offset,"limit":50}"""
             val body = pathfinderGet("fetchLibraryTracks", variables, HASH_FETCH_LIBRARY_TRACKS, token, clientToken)

@@ -110,6 +110,7 @@ fun CanvasArtworkPlayer(
 
     val player = remember {
         val httpFactory = DefaultHttpDataSource.Factory()
+            .setTransferListener(com.lastwave.app.data.network.DataMeter.listener(com.lastwave.app.data.network.DataCategory.CANVAS))
             .setUserAgent(CANVAS_UA)
             .setAllowCrossProtocolRedirects(true)
         val upstream = DefaultDataSource.Factory(context, httpFactory)

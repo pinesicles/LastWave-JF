@@ -96,6 +96,8 @@ data class TracksState(
     val entryIds: List<String?> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
+    /** Showing the saved copy while the server's list is still on its way. */
+    val refreshing: Boolean = false,
 )
 
 data class ArtistAlbumsState(
@@ -129,6 +131,7 @@ class LibraryViewModel @Inject constructor(
     private val downloads: JellyDownloads,
     private val jellyPins: com.lastwave.app.data.jellyfin.JellyPins,
     private val connectivity: com.lastwave.app.data.jellyfin.JellyConnectivity,
+    private val jellyRecents: com.lastwave.app.data.jellyfin.JellyRecents,
 ) : ViewModel() {
 
     // ---- long-press menu for albums / playlists / artists and pins ------------------------
@@ -152,6 +155,19 @@ class LibraryViewModel @Inject constructor(
         is LibraryDetail.LikedSongs -> repository.favoriteTracks()
         is LibraryDetail.Artist -> repository.artistAlbums(detail.item.id).items.take(30)
             .flatMap { runCatching { repository.albumTracks(it.id) }.getOrDefault(emptyList()) }
+    }
+
+    /** Remember that you played from this album/playlist (drives the Feed's tiles). */
+    fun recordPlay(detail: LibraryDetail) {
+        val type = when (detail) {
+            is LibraryDetail.Album -> com.lastwave.app.data.jellyfin.download.COLLECTION_ALBUM
+            is LibraryDetail.Playlist -> com.lastwave.app.data.jellyfin.download.COLLECTION_PLAYLIST
+            else -> return
+        }
+        val item = detail.item
+        viewModelScope.launch {
+            runCatching { jellyRecents.record(item.id, type, item.name.orEmpty(), item.albumArtist) }
+        }
     }
 
     /** "Go to artist" from an album's menu. */
@@ -246,6 +262,17 @@ class LibraryViewModel @Inject constructor(
     private val _songs = MutableStateFlow(SongsState())
     val songs: StateFlow<SongsState> = _songs.asStateFlow()
     private var songsJob: Job? = null
+
+    /** True while the current tab's list is (re)loading; drives the pull-to-refresh spinner. */
+    val refreshing: StateFlow<Boolean> = kotlinx.coroutines.flow.combine(_tab, playlists, albums, artists, songs) { t, p, a, ar, s ->
+        when (t) {
+            LibraryTab.PLAYLISTS -> p.loading
+            LibraryTab.ALBUMS -> a.loading
+            LibraryTab.ARTISTS -> ar.loading
+            LibraryTab.SONGS -> s.loading
+            else -> false
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun loadMoreAlbums() = albumsPaged.loadMore()
     fun loadMoreArtists() = artistsPaged.loadMore()
@@ -354,7 +381,7 @@ class LibraryViewModel @Inject constructor(
                         // Downloaded copy first, so a saved playlist opens instantly; the server list replaces it.
                         runCatching { repository.localCollection(id).first }.getOrNull()
                             ?.takeIf { it.isNotEmpty() }
-                            ?.let { local -> _detailTracks.value = TracksState(tracks = local, entryIds = local.map { null }) }
+                            ?.let { local -> _detailTracks.value = TracksState(tracks = local, entryIds = local.map { null }, refreshing = true) }
                         val entries = try {
                             withTimeoutOrNull(8_000) { repository.playlistEntries(id) }
                         } catch (e: CancellationException) {
@@ -584,7 +611,7 @@ class LibraryViewModel @Inject constructor(
     fun downloadCollection(item: JfItem, type: String) {
         launchEdit("Couldn't start download") {
             downloads.download(item, type)
-            if (!(_favouriteOverrides.value[item.id] ?: item.isFavorite)) {
+            if (item.id != LikedSongsItem.id && !(_favouriteOverrides.value[item.id] ?: item.isFavorite)) {
                 repository.setFavorite(item.id, true)
                 _favouriteOverrides.update { it + (item.id to true) }
             }

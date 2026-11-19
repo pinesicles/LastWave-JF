@@ -148,7 +148,7 @@ fun ArtistDetailScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     var selectedTrackMenu by remember { mutableStateOf<PlayableTrack?>(null) }
     var showAllSongs by rememberSaveable { mutableStateOf(false) }
-    var showHeaderVideo by rememberSaveable(artistName, settings.canvasEnabled) { mutableStateOf(settings.canvasEnabled) }
+    var showHeaderVideo by rememberSaveable(artistName, settings.canvasEnabled) { mutableStateOf(settings.canvasEnabled && !com.lastwave.app.data.network.DataMeter.savingNow()) }
     var showFullscreenMotion by rememberSaveable { mutableStateOf(false) }
     val listState = rememberLazyListState()
 

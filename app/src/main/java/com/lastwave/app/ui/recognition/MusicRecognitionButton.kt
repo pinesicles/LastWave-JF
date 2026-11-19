@@ -60,7 +60,7 @@ import com.lastwave.app.ui.common.HeaderActionIcon
  * at once (pager tabs).
  */
 @Composable
-fun MusicRecognitionButton(key: String) {
+fun MusicRecognitionButton(key: String, onMatchSearch: ((String) -> Unit)? = null) {
     val viewModel: MusicRecognitionViewModel = hiltViewModel(key = key)
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -88,7 +88,15 @@ fun MusicRecognitionButton(key: String) {
                 )
                 viewModel.dismiss()
             },
-            onSearch = viewModel::searchFor,
+            onSearch = { song ->
+                // JellyWave: a host screen can take the match and search its own library instead.
+                if (onMatchSearch != null) {
+                    viewModel.dismiss()
+                    onMatchSearch(listOf(song.title, song.artist).filter { it.isNotBlank() }.joinToString(" "))
+                } else {
+                    viewModel.searchFor(song)
+                }
+            },
         )
     }
 }

@@ -1,5 +1,6 @@
 package com.lastwave.app.data.jellyfin
 
+import kotlinx.coroutines.sync.withLock
 import com.lastwave.app.playback.PlayableTrack
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,6 +26,7 @@ class JellyfinRepository @Inject constructor(
     private val store: JellyfinSessionStore,
     private val downloads: com.lastwave.app.data.jellyfin.download.JellyDownloads,
     private val autoQuality: JellyAutoQuality,
+    private val playTime: JellyPlayTimeQuality,
 ) {
     val session = store.session
     val streamKbps = store.streamKbps
@@ -111,11 +113,29 @@ class JellyfinRepository @Inject constructor(
         return api.playlistTracks(s, playlistId).items.map { PlaylistEntry(toPlayable(s, it, kbps), it.playlistItemId) }
     }
 
-    suspend fun createPlaylist(name: String, trackIds: List<String>) =
-        api.createPlaylist(requireSession(), name, trackIds)
+    /**
+     * Creates the playlist with one song, then adds the rest in small batches (the same call the "add to playlist" menu
+     * uses). Sending hundreds of ids in the create request can leave the playlist empty on some servers.
+     */
+    suspend fun createPlaylist(name: String, trackIds: List<String>): String {
+        val s = requireSession()
+        val id = api.createPlaylist(s, name, trackIds.take(1))
+        if (trackIds.size > 1) api.addToPlaylist(s, id, trackIds.drop(1))
+        // Make sure they really landed; if the server dropped them, add everything again.
+        if (trackIds.isNotEmpty() && api.playlistTracks(s, id).items.isEmpty()) api.addToPlaylist(s, id, trackIds)
+        return id
+    }
 
     suspend fun addToPlaylist(playlistId: String, trackIds: List<String>) =
         api.addToPlaylist(requireSession(), playlistId, trackIds)
+
+    /** MusicBrainz ids Jellyfin holds for an item (MusicBrainzAlbum, MusicBrainzReleaseGroup, ...). */
+    suspend fun providerIds(itemId: String): Map<String, String> = api.item(requireSession(), itemId).providerIds
+
+    suspend fun refreshLibrary() = api.refreshLibrary(requireSession())
+
+    suspend fun albumTrackIds(albumId: String): List<String> =
+        api.albumTracks(requireSession(), albumId).items.map { it.id }
 
     suspend fun removeFromPlaylist(playlistId: String, entryId: String) =
         api.removeFromPlaylist(requireSession(), playlistId, listOf(entryId))
@@ -148,6 +168,84 @@ class JellyfinRepository @Inject constructor(
             .firstOrNull { it.type == "MusicArtist" && com.lastwave.app.data.jellyfin.importer.ImportMatcher.norm(it.name.orEmpty()) == n }
     }
 
+    /**
+     * Finds a song by title first, then checks the artist: searches the title (with and without "(Remastered)" style
+     * tails), then keeps the candidate whose title and artists match best. Looser than exact matching on both.
+     */
+    suspend fun findSong(title: String, artist: String): PlayableTrack? {
+        val m = com.lastwave.app.data.jellyfin.importer.ImportMatcher
+        var best: PlayableTrack? = null
+        var bestScore = 0.0
+        for (q in linkedSetOf(title, m.baseTitle(title)).filter { it.isNotBlank() }) {
+            for (c in searchSongs(q, 60)) {
+                val ts = m.titleScore(c.title, title)
+                if (ts < 0.85) continue
+                val a = if (artist.isBlank()) 1.0 else m.artistScore(artist, c.artist)
+                if (a < 0.5) continue
+                if (ts + a > bestScore) { best = c; bestScore = ts + a }
+            }
+            if (best != null && bestScore >= 1.9) break
+        }
+        if (best != null) return best
+        best = findSongLoose(title, artist)
+        if (best != null || artist.isBlank()) return best
+        // Common titles ("Intro", "Home") get buried in a plain search, so look inside the artist's own songs instead.
+        val s = requireSession()
+        val kbps = effectiveKbps()
+        val artists = api.search(s, m.artistParts0(artist).firstOrNull() ?: artist, 10).items
+            .filter { it.type == "MusicArtist" && m.artistScore(artist, it.name.orEmpty()) >= 0.8 }.take(3)
+        for (a in artists) {
+            for (term in listOf(title, m.baseTitle(title), null)) {
+                val songs = api.songsByArtist(s, a.id, term, if (term == null) 600 else 100).items.map { toPlayable(s, it, kbps) }
+                for (c in songs) {
+                    val ts = m.titleScore(c.title, title)
+                    if (ts >= 0.85 && ts > bestScore) { best = c; bestScore = ts }
+                }
+                if (best != null) return best
+            }
+        }
+        return best
+    }
+
+    private class IndexEntry(val id: String, val title: String, val artists: List<String>)
+    private var songIndex: List<IndexEntry>? = null
+    private var songIndexAt = 0L
+
+    private val indexLock = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun index(): List<IndexEntry> = indexLock.withLock {
+        songIndex?.let { if (System.currentTimeMillis() - songIndexAt < 30 * 60_000L) return@withLock it }
+        val s = requireSession()
+        val all = ArrayList<IndexEntry>()
+        var start = 0
+        while (true) {
+            val page = api.songPage(s, start, 2000)
+            page.items.forEach { all += IndexEntry(it.id, it.name.orEmpty(), (it.artists + listOfNotNull(it.albumArtist)).distinct()) }
+            start += page.items.size
+            if (page.items.isEmpty() || start >= page.total) break
+        }
+        songIndex = all
+        songIndexAt = System.currentTimeMillis()
+        all
+    }
+
+    /** Last resort: compares against the whole library by sound, so "karyera" finds "карьера" and the reverse. */
+    private suspend fun findSongLoose(title: String, artist: String): PlayableTrack? {
+        val L = com.lastwave.app.data.jellyfin.importer.LooseMatch
+        var bestId: String? = null
+        var bestScore = 0.0
+        for (e in index()) {
+            val t = L.titleRatio(title, e.title)
+            if (t < 0.8) continue
+            val a = if (artist.isBlank()) 1.0 else L.artistRatio(artist, e.artists)
+            if (a < 0.75) continue
+            if (t + a > bestScore) { bestScore = t + a; bestId = e.id }
+        }
+        val id = bestId ?: return null
+        val s = requireSession()
+        return toPlayable(s, api.item(s, id), effectiveKbps())
+    }
+
     suspend fun findAlbum(name: String, artist: String?): JfItem? {
         val m = com.lastwave.app.data.jellyfin.importer.ImportMatcher
         val n = m.norm(name)
@@ -177,13 +275,16 @@ class JellyfinRepository @Inject constructor(
         ).filter { it.isNotBlank() }.distinct()
         val found = LinkedHashMap<String, PlayableTrack>()
         for (term in terms) {
-            val hits = try { searchSongs(term, 25) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { emptyList() }
+            val hits = try { searchSongs(term, 50) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { emptyList() }
             hits.forEach { h -> h.internalTrackId?.let { found.putIfAbsent(it, h) } }
             val best = matcher.rank(src, found.values.toList()).firstOrNull()
             if (best != null && matcher.accepts(src, best)) {
                 return com.lastwave.app.data.jellyfin.importer.ImportOutcome(src, best, emptyList())
             }
         }
+        // Title-first fallback: same title with a plausibly matching artist, even when the overall score is low.
+        val byTitle = try { findSong(src.title, src.artist) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { null }
+        if (byTitle != null) return com.lastwave.app.data.jellyfin.importer.ImportOutcome(src, byTitle, emptyList())
         val ranked = matcher.rank(src, found.values.toList())
         return com.lastwave.app.data.jellyfin.importer.ImportOutcome(src, null, ranked.take(3))
     }
@@ -265,6 +366,7 @@ class JellyfinRepository @Inject constructor(
     fun toPlayable(session: JellyfinSession, item: JfItem, maxKbps: Int): PlayableTrack {
         val source = item.mediaSources.firstOrNull()
         val sourceKbps = source?.bitrate?.let { (it / 1000L).toInt() }
+        playTime.remember(item.id, sourceKbps)
         val target = api.streamTarget(session, item.id, maxKbps, sourceKbps)
         val artistText = item.artists.joinToString(", ").ifBlank { item.albumArtist.orEmpty() }
         // Tracks without their own cover use the album's.

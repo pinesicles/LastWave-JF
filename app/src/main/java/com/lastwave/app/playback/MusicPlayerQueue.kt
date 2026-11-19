@@ -189,7 +189,7 @@ internal fun MusicPlayer.appendToQueueEnd(items: List<MediaItem>) {
      * it at the end of the play order. Main thread only.
      */
     @MainThread
-internal fun MusicPlayer.placeInsertedIndexInShuffleOrder(index: Int, last: Boolean) {
+internal fun MusicPlayer.placeInsertedIndexInShuffleOrder(index: Int, last: Boolean, afterQueued: Int = 0) {
         if (!player.shuffleModeEnabled) return
         val timeline = player.currentTimeline
         if (timeline.isEmpty || index !in 0 until player.mediaItemCount) return
@@ -207,7 +207,8 @@ internal fun MusicPlayer.placeInsertedIndexInShuffleOrder(index: Int, last: Bool
         if (last || currentPos == -1) {
             order.add(index)
         } else {
-            val at = (currentPos + 1).coerceIn(0, order.size)
+            // afterQueued: songs already added by swipe stay ahead of this one (first added plays first).
+            val at = (currentPos + 1 + afterQueued).coerceIn(0, order.size)
             order.add(at, index)
         }
         player.setShuffleOrder(DefaultShuffleOrder(order.toIntArray(), Random.nextLong()))

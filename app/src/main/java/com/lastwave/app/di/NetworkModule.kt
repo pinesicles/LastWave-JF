@@ -63,6 +63,7 @@ object NetworkModule {
         val cacheDir = File(context.cacheDir, "lfm_http_cache")
         val cache = Cache(cacheDir, HTTP_CACHE_SIZE)
 
+        com.lastwave.app.data.network.DataMeter.init(context)
         return OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .cache(cache)
@@ -72,6 +73,8 @@ object NetworkModule {
             .dns(com.lastwave.app.data.network.Ipv4FirstDnsResolver(context = context))
             .retryOnConnectionFailure(true)
             .addInterceptor(TrafficPriorityInterceptor())
+            .addNetworkInterceptor(com.lastwave.app.data.network.DataMeter.interceptor)
+            .addInterceptor(com.lastwave.app.data.requests.DnAuth.interceptor)
             .addInterceptor { chain ->
                 val original = chain.request()
                 val isLastFm = original.url.host.endsWith("audioscrobbler.com", ignoreCase = true)

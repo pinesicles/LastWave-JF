@@ -297,6 +297,35 @@ class JellyfinApi @Inject constructor(
         }.build(),
     )
 
+    /** One page of every song (names and artists only), for matching across spellings. */
+    suspend fun songPage(session: JellyfinSession, start: Int, limit: Int): JfPage = getItems(
+        session,
+        urlBuilder(session.serverUrl, "Items").apply {
+            addQueryParameter("userId", session.userId)
+            addQueryParameter("includeItemTypes", "Audio")
+            addQueryParameter("recursive", "true")
+            addQueryParameter("enableImages", "false")
+            addQueryParameter("enableUserData", "false")
+            addQueryParameter("sortBy", "SortName")
+            addQueryParameter("startIndex", start.toString())
+            addQueryParameter("limit", limit.toString())
+        }.build(),
+    )
+
+    /** Songs by one artist (optionally filtered by [term]); lets matching reach songs with very common titles. */
+    suspend fun songsByArtist(session: JellyfinSession, artistId: String, term: String?, limit: Int = 100): JfPage = getItems(
+        session,
+        urlBuilder(session.serverUrl, "Items").apply {
+            addQueryParameter("userId", session.userId)
+            addQueryParameter("artistIds", artistId)
+            if (!term.isNullOrBlank()) addQueryParameter("searchTerm", term)
+            addQueryParameter("includeItemTypes", "Audio")
+            addQueryParameter("recursive", "true")
+            addQueryParameter("fields", ITEM_FIELDS)
+            addQueryParameter("limit", limit.toString())
+        }.build(),
+    )
+
     /** Songs only, for matching imports and manual search. */
     suspend fun searchSongs(session: JellyfinSession, term: String, limit: Int = 20): JfPage = getItems(
         session,
@@ -363,6 +392,12 @@ class JellyfinApi @Inject constructor(
         }
     }
 
+    /** Asks the server to rescan its libraries. Needs an admin account; callers ignore failures. */
+    suspend fun refreshLibrary(session: JellyfinSession) {
+        val url = urlBuilder(session.serverUrl, "Library", "Refresh").build()
+        execute(authed(session, url).post("".toRequestBody(JSON_MEDIA)).build())
+    }
+
     /** [entryIds] are playlist entry ids (a song added twice has two), not song ids. */
     suspend fun removeFromPlaylist(session: JellyfinSession, playlistId: String, entryIds: List<String>) {
         val url = urlBuilder(session.serverUrl, "Playlists", playlistId, "Items").apply {
@@ -414,6 +449,7 @@ class JellyfinApi @Inject constructor(
                 .build()
             val have = if (dest.exists()) dest.length() else 0L
             val builder = Request.Builder().url(url).header("Authorization", authHeader(session.deviceId, session.token))
+                .tag(com.lastwave.app.data.network.DataCategory::class.java, com.lastwave.app.data.network.DataCategory.DOWNLOADS)
             if (have > 0) builder.header("Range", "bytes=$have-")
             try {
                 client.newCall(builder.get().build()).execute().use { r ->
@@ -493,7 +529,7 @@ class JellyfinApi @Inject constructor(
             addQueryParameter("maxStreamingBitrate", (maxKbps * 1000L).toString())
             addQueryParameter("container", "aac")
             addQueryParameter("audioCodec", "aac")
-            addQueryParameter("transcodingContainer", "ts")
+            addQueryParameter("transcodingContainer", if (com.lastwave.app.ui.settings.JellySettingsFlags.HLS_FMP4_SEGMENTS) "mp4" else "ts")
             addQueryParameter("transcodingProtocol", "hls")
             addQueryParameter("api_key", session.token)
         }.build().toString()

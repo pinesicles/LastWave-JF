@@ -30,6 +30,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -98,7 +103,7 @@ internal class RowAction(
  * A song row in LastWave's own list style (grouped card, 50dp artwork, playing bars,
  * long-press menu), the same look as the Downloads and Local music lists.
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 internal fun JellyTrackRow(
     track: PlayableTrack,
@@ -117,6 +122,41 @@ internal fun JellyTrackRow(
     }
     val haptics = LocalHapticFeedback.current
     var menu by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Swipe right and let go: add to "play next", in the order swiped. Fires once per swipe, on release.
+    val swipeScope = androidx.compose.runtime.rememberCoroutineScope()
+    val swipeX = remember { androidx.compose.animation.core.Animatable(0f) }
+    val swipeThreshold = with(androidx.compose.ui.platform.LocalDensity.current) { 72.dp.toPx() }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .pointerInput(track) {
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        if (swipeX.value >= swipeThreshold) {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            player.playNextInOrder(track)
+                            android.widget.Toast.makeText(context, "Plays next", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        swipeScope.launch { swipeX.animateTo(0f) }
+                    },
+                    onDragCancel = { swipeScope.launch { swipeX.animateTo(0f) } },
+                    onHorizontalDrag = { change, amount ->
+                        change.consume()
+                        swipeScope.launch { swipeX.snapTo((swipeX.value + amount).coerceIn(0f, swipeThreshold * 1.5f)) }
+                    },
+                )
+            },
+    ) {
+        Box(Modifier.matchParentSize().padding(start = 32.dp), contentAlignment = Alignment.CenterStart) {
+            Icon(
+                Icons.Filled.QueuePlayNext,
+                contentDescription = "Play next",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.alpha((swipeX.value / swipeThreshold).coerceIn(0f, 1f)),
+            )
+        }
+        Box(Modifier.offset { androidx.compose.ui.unit.IntOffset(swipeX.value.toInt(), 0) }) {
     Card(
         shape = groupShape(position),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
@@ -215,51 +255,66 @@ internal fun JellyTrackRow(
             }
         }
     }
+        }
+    }
 }
 
 /** LastWave's pill chip strip (as on the original Feed), without the "All" chip. */
 @Composable
-internal fun JellyChipsBar(labels: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+internal fun JellyChipsBar(labels: List<String>, selected: Int, fill: Boolean = false, onSelect: (Int) -> Unit) {
     val haptics = LocalHapticFeedback.current
+    @Composable
+    fun Chip(index: Int, modifier: Modifier) {
+        val isSelected = index == selected
+        val bg by animateColorAsState(
+            if (isSelected) MaterialTheme.colorScheme.primaryContainer else androidx.compose.ui.graphics.Color.Transparent,
+            label = "chipBg",
+        )
+        val fg by animateColorAsState(
+            if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+            label = "chipFg",
+        )
+        Surface(
+            onClick = {
+                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onSelect(index)
+            },
+            shape = RoundedCornerShape(16.dp),
+            color = bg,
+            modifier = modifier.height(38.dp),
+        ) {
+            Box(Modifier.fillMaxHeight().padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    labels[index],
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    color = fg,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
     ) {
-        LazyRow(
-            modifier = Modifier.fillMaxWidth().padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            items(labels.size) { index ->
-                val isSelected = index == selected
-                val bg by animateColorAsState(
-                    if (isSelected) MaterialTheme.colorScheme.primaryContainer else androidx.compose.ui.graphics.Color.Transparent,
-                    label = "chipBg",
-                )
-                val fg by animateColorAsState(
-                    if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                    label = "chipFg",
-                )
-                Surface(
-                    onClick = {
-                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onSelect(index)
-                    },
-                    shape = RoundedCornerShape(16.dp),
-                    color = bg,
-                    modifier = Modifier.height(38.dp),
-                ) {
-                    Box(Modifier.fillMaxHeight().padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
-                        Text(
-                            labels[index],
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            color = fg,
-                            maxLines = 1,
-                        )
-                    }
-                }
+        if (fill) {
+            // Few chips (Feed / Library): share the whole width.
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                labels.indices.forEach { Chip(it, Modifier.weight(1f)) }
+            }
+        } else {
+            LazyRow(
+                modifier = Modifier.fillMaxWidth().padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                items(labels.size) { index -> Chip(index, Modifier) }
             }
         }
     }
@@ -306,7 +361,6 @@ internal fun JellySearchResults(session: JellyfinSession?, state: SearchState, v
         state.query.isBlank() ->
             if (mode == LibraryMode.SAVED) "Search your saved albums, artists, playlists and liked songs" else "Search your Jellyfin server"
         state.error != null || (state.loading && empty) -> null
-        empty && mode == LibraryMode.SAVED -> "Nothing found"
         else -> null
     }
     when {
@@ -343,16 +397,14 @@ internal fun JellySearchResults(session: JellyfinSession?, state: SearchState, v
                 item(key = "h_playlists") { SearchLabel("Playlists") }
                 item(key = "playlists") { Shelf(session, hits.playlists, false, viewModel) { viewModel.open(LibraryDetail.Playlist(it)) } }
             }
-            if (mode != LibraryMode.SAVED) {
-                if (empty) item(key = "none_here") {
-                    Text(
-                        "Nothing on your server for “${state.query}”",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
-                    )
-                }
-                outsideSearchItems(state.query, outsideState, outside, player, addToLocalPlaylist)
+            if (empty) item(key = "none_here") {
+                Text(
+                    if (mode == LibraryMode.SAVED) "Nothing in your library for “${state.query}”" else "Nothing on your server for “${state.query}”",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                )
             }
+            outsideSearchItems(state.query, outsideState, outside, player, addToLocalPlaylist)
         }
     }
 }

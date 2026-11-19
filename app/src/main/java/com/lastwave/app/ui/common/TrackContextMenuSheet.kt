@@ -32,6 +32,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -385,6 +387,9 @@ fun TrackContextMenuSheet(
     onRemoveFromQueue: (() -> Unit)? = null,
     onWatchVideo: (() -> Unit)? = null,
     canWatchVideo: Boolean = true,
+    /** Now Playing only: shows a Canvas on/off row. */
+    onToggleCanvas: (() -> Unit)? = null,
+    canvasOn: Boolean = true,
     genreResolverViewModel: GenreRowViewModel = hiltViewModel(),
     startMixViewModel: StartMixMenuViewModel = hiltViewModel(),
     exploreGenreViewModel: ExploreGenreMenuViewModel = hiltViewModel(),
@@ -631,6 +636,18 @@ fun TrackContextMenuSheet(
                             }
                         }
                     }
+                    if (isSong && onToggleCanvas != null) {
+                        add { pos ->
+                            MenuActionRow(
+                                icon = Icons.Filled.SmartDisplay,
+                                label = if (canvasOn) "Turn Canvas off" else "Turn Canvas on",
+                                position = pos,
+                            ) {
+                                onToggleCanvas()
+                                onDismiss()
+                            }
+                        }
+                    }
                     val t = target
                     if (isLocalFile) {
                         add { pos ->
@@ -663,6 +680,22 @@ fun TrackContextMenuSheet(
                                 artistAlbumViewModel.openAlbum(album, albumArtist)
                                 onDismiss()
                             }
+                        }
+                    }
+                    // Songs that aren't on the Jellyfin server can be looked up there, or requested (its album) on the request server.
+                    if (isSong && !isLocalFile && playable.internalTrackId?.startsWith("jf:") != true) add { pos ->
+                        val find = com.lastwave.app.ui.library.LocalFindOnServer.current
+                        MenuActionRow(Icons.Filled.Search, "Find on server", position = pos) {
+                            find(com.lastwave.app.ui.library.FindQuery(com.lastwave.app.ui.library.FindKind.SONG, t.name, playable.artist.ifBlank { t.artist }, playable.album))
+                            onDismiss()
+                        }
+                    }
+                    // Songs that aren't on the Jellyfin server can be requested (its album) on the request server.
+                    if (isSong && !isLocalFile && playable.internalTrackId?.startsWith("jf:") != true) add { pos ->
+                        val request = com.lastwave.app.ui.requests.LocalRequestAlbum.current
+                        MenuActionRow(Icons.Filled.CloudDownload, "Request on server", position = pos) {
+                            request(listOf(playable.artist.ifBlank { t.artist }, playable.album?.takeIf { it.isNotBlank() } ?: t.name).joinToString(" "))
+                            onDismiss()
                         }
                     }
                     val downloadKey = com.lastwave.app.data.download.TrackDownloadManager.makeDownloadKey(t.name, t.artist)

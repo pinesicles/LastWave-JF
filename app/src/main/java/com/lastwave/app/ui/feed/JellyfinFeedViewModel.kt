@@ -30,6 +30,9 @@ data class JellyfinFeedState(
     val online: Boolean = true,
     /** Downloaded albums and playlists, offered when there's no connection. */
     val offlineItems: List<JfItem> = emptyList(),
+    /** Albums/playlists you play most (at least twice), and the ones you played last. */
+    val mostPlayed: List<JfItem> = emptyList(),
+    val recentlyPlayed: List<JfItem> = emptyList(),
 )
 
 /** Shelves for the Feed tab, all read from the Jellyfin server. */
@@ -39,6 +42,7 @@ class JellyfinFeedViewModel @Inject constructor(
     private val shelfBuilder: JellyFeedShelves,
     private val connectivity: com.lastwave.app.data.jellyfin.JellyConnectivity,
     private val downloads: com.lastwave.app.data.jellyfin.download.JellyDownloads,
+    private val recents: com.lastwave.app.data.jellyfin.JellyRecents,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(JellyfinFeedState())
@@ -73,6 +77,22 @@ class JellyfinFeedViewModel @Inject constructor(
     }
 
     init {
+        viewModelScope.launch {
+            recents.entries.collect { list ->
+                fun item(e: com.lastwave.app.data.jellyfin.RecentCollection) = JfItem(
+                    id = e.id, name = e.name, albumArtist = e.subtitle,
+                    type = if (e.type == com.lastwave.app.data.jellyfin.download.COLLECTION_PLAYLIST) "Playlist" else "MusicAlbum",
+                    // Any tag makes the cover URL build; the server ignores its value.
+                    imageTags = mapOf("Primary" to "recent"),
+                )
+                _state.update { s ->
+                    s.copy(
+                        mostPlayed = list.filter { it.count >= 2 }.sortedByDescending { it.count }.take(2).map(::item),
+                        recentlyPlayed = list.sortedByDescending { it.last }.map(::item),
+                    )
+                }
+            }
+        }
         viewModelScope.launch {
             connectivity.online.collect { on ->
                 _state.update { it.copy(online = on) }

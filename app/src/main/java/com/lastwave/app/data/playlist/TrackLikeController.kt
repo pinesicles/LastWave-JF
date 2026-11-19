@@ -30,6 +30,7 @@ class TrackLikeController @Inject constructor(
     private val localOfflineRepository: LocalOfflineRepository,
     private val ytAuth: YtMusicAuthManager,
     private val jellyFavourites: com.lastwave.app.data.jellyfin.JellyFavourites,
+    private val likeSync: com.lastwave.app.data.likes.LikeSync,
     applicationScope: CoroutineScope,
 ) {
     val youTubeConnection = ytAuth.connection
@@ -58,7 +59,9 @@ class TrackLikeController @Inject constructor(
         }
 
     /** Flips the local heart. Returns the new state; throws when storage could not be updated. */
-    suspend fun toggle(track: PlayableTrack): Boolean {
+    suspend fun toggle(track: PlayableTrack): Boolean = toggleCore(track).also { likeSync.onToggled(track, it) }
+
+    private suspend fun toggleCore(track: PlayableTrack): Boolean {
         // Jellyfin songs: the heart is a Jellyfin favourite.
         if (track.internalTrackId?.startsWith("jf:") == true) return jellyFavourites.toggle(track)
         val localUrl = deviceLocalUrl(track)

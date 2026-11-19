@@ -46,6 +46,7 @@ class ScrobbleRepository @Inject constructor(
     private val api: LastFmApiService,
     private val sessionPreferences: SessionPreferences,
     private val rateGuard: LastFmRateGuard,
+    private val listenBrainz: com.lastwave.app.data.listenbrainz.ListenBrainzClient,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val callMutex = Mutex()
@@ -78,6 +79,7 @@ class ScrobbleRepository @Inject constructor(
         if (artist.equals("Podcast", ignoreCase = true) || track.equals("Podcast", ignoreCase = true)) {
             return Result.Success
         }
+        listenBrainz.nowPlaying(artist, track, album)
         val key = "${artist.lowercase().trim()}|${track.lowercase().trim()}"
         if (key == lastNowPlayingKey) {
             return Result.Success // Already announced on Last.fm, 0 network calls
@@ -101,6 +103,7 @@ class ScrobbleRepository @Inject constructor(
         if (artist.equals("Podcast", ignoreCase = true) || track.equals("Podcast", ignoreCase = true)) {
             return Result.Success
         }
+        listenBrainz.scrobble(artist, track, album, timestampSec)
         // Try flushing any previously queued offline scrobbles first
         flushPendingScrobbles()
 

@@ -205,7 +205,7 @@ fun LastWaveNavHost(
             // albums visibly dead and the detail ViewModel showing stale data.
             // Rapid double-tap dedup already lives in ArtistAlbumNavigator.
             // Jellyfin library first: if the artist/album is there, open it in the Library tab.
-            val inJelly = when (target) {
+            val inJelly = if (target.youtubeOnly) false else when (target) {
                 is ArtistAlbumNavTarget.Artist -> navBridge.jellyNavigator.tryArtist(target.name)
                 is ArtistAlbumNavTarget.Album -> navBridge.jellyNavigator.tryAlbum(target.title, target.artist)
             }
