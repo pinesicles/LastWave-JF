@@ -634,7 +634,7 @@ fun SettingsScreen(
                         item { DroppedNeedleSettingsSection() }
                         item { DataUsageSettingsSection() }
                         item { ListenBrainzSettingsSection() }
-                        item { LikesSyncSettingsSection() }
+                        item { com.lastwave.app.ui.sync.SyncCenterSettingsEntry() }
                         item { CarLyricsSettingsSection() }
 
                         item {

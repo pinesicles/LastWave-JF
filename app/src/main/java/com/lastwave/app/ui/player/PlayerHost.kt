@@ -726,6 +726,7 @@ fun PlayerHost(
             
             com.lastwave.app.ui.library.JellyAddToPlaylistHost(jellyPickerTracks) { jellyPickerTracks = null }
             com.lastwave.app.ui.requests.RequestAlbumHost(requestQuery) { requestQuery = null }
+            com.lastwave.app.ui.sync.SyncCenterOverlay()
             playlistTrack?.let { track ->
                 AddToPlaylistDialogHost(
                     viewModel = viewModel,

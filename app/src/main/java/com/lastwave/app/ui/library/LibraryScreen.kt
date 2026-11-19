@@ -774,8 +774,6 @@ private fun DetailPage(session: JellyfinSession, detail: LibraryDetail, viewMode
     val canFavourite = detail is LibraryDetail.Artist
     val addToPlaylist = LocalJellyAddToPlaylist.current
     val isPlaylistPage = detail is LibraryDetail.Playlist
-    var showSyncIssues by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-    if (showSyncIssues) SyncIssuesHost { showSyncIssues = false }
     var showLeft by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     if (showLeft) ImportLeftoversDialog(item.id) { showLeft = false }
     androidx.compose.runtime.DisposableEffect(item.id, isPlaylistPage) {
@@ -1009,8 +1007,8 @@ val overCover = (detail is LibraryDetail.Playlist && heroCoverUrl != null) || (d
                             val failedCount by androidx.hilt.navigation.compose.hiltViewModel<SyncIssuesViewModel>(key = "sync-issues")
                                 .mirror.failures.collectAsStateWithLifecycle()
                             DropdownMenuItem(
-                                text = { Text(if (failedCount.isEmpty()) "Sync issues" else "Sync issues (${failedCount.size})") },
-                                onClick = { menuOpen = false; showSyncIssues = true },
+                                text = { Text(if (failedCount.isEmpty()) "Sync & imports" else "Sync & imports (${failedCount.size})") },
+                                onClick = { menuOpen = false; com.lastwave.app.ui.sync.SyncCenter.show(com.lastwave.app.ui.sync.SyncFilter(com.lastwave.app.ui.sync.SyncFilter.Kind.LIKES)) },
                             )
                         } else if (detail is LibraryDetail.Album) {
                             DropdownMenuItem(
@@ -1030,6 +1028,15 @@ val overCover = (detail is LibraryDetail.Playlist && heroCoverUrl != null) || (d
                             DropdownMenuItem(
                                 text = { Text("Change cover") },
                                 onClick = { menuOpen = false; coverPicker.launch("image/*") },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Sync & imports") },
+                                onClick = {
+                                    menuOpen = false
+                                    com.lastwave.app.ui.sync.SyncCenter.show(
+                                        com.lastwave.app.ui.sync.SyncFilter(com.lastwave.app.ui.sync.SyncFilter.Kind.PLAYLIST, item.id, item.name),
+                                    )
+                                },
                             )
                             val leftCount = remember(item.id, menuOpen) { ImportLeftovers.count(context, item.id) }
                             if (leftCount > 0) DropdownMenuItem(

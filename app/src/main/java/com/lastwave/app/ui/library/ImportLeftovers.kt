@@ -50,6 +50,8 @@ object ImportLeftovers {
     fun remove(c: Context, playlistId: String, t: ImportTrack) =
         save(c, playlistId, load(c, playlistId).filterNot { it.title == t.title && it.artist == t.artist })
 
+    fun allIds(c: Context): List<String> = prefs(c).all.keys.filter { count(c, it) > 0 }
+
     fun count(c: Context, playlistId: String) = load(c, playlistId).size
 }
 

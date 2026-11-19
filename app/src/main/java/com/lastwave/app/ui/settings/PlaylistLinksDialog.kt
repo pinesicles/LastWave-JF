@@ -56,6 +56,7 @@ internal fun PlaylistLinksDialog(onClose: () -> Unit, vm: PlaylistLinksViewModel
     var auto by remember { mutableStateOf(vm.links.auto) }
     var result by remember { mutableStateOf<String?>(null) }
     var running by remember { mutableStateOf(false) }
+    // Progress comes from the shared status, so a sync started elsewhere (background, another screen) shows here too.
     val scope = rememberCoroutineScope()
     editing?.let { e ->
         LinkEditor(e, vm, onDone = { editing = null })
@@ -67,7 +68,7 @@ internal fun PlaylistLinksDialog(onClose: () -> Unit, vm: PlaylistLinksViewModel
         text = {
             Column {
                 when {
-                    running -> Text(status ?: "Syncing…")
+                    running || status != null -> Text(status ?: "Syncing…")
                     result != null -> Text(result!!)
                     links.isEmpty() -> Text("No syncs yet. Add one to keep a Jellyfin playlist matched with your request server or a Spotify playlist.", style = MaterialTheme.typography.bodySmall)
                     else -> LazyColumn(Modifier.heightIn(max = 320.dp)) {
@@ -93,8 +94,8 @@ internal fun PlaylistLinksDialog(onClose: () -> Unit, vm: PlaylistLinksViewModel
         },
         confirmButton = {
             Row {
-                TextButton(enabled = !running, onClick = { result = null; editing = PlaylistLink(java.util.UUID.randomUUID().toString(), "", "") }) { Text("Add") }
-                TextButton(enabled = !running && links.isNotEmpty(), onClick = {
+                TextButton(enabled = !running && status == null, onClick = { result = null; editing = PlaylistLink(java.util.UUID.randomUUID().toString(), "", "") }) { Text("Add") }
+                TextButton(enabled = !running && status == null && links.isNotEmpty(), onClick = {
                     running = true; result = null
                     scope.launch { result = vm.links.runAll(); running = false }
                 }) { Text("Sync now") }

@@ -87,3 +87,4 @@ Offline-first (weak 2.4 GHz Wi-Fi). Server is Jellyfin 12.4.
 - Step 58: keep-awake also sets the window flag and only while playing.
 - Step 58: 'Turn Canvas on/off' row in the Now Playing track menu (same setting as Settings).
 - Step 59: YouTube Music background polling stretched from 1 min to 20 min and paused in data saver (was re-downloading the whole liked list every minute).
+- Step 60: Sync & imports screen (ui/sync/SyncCenter.kt): live activity, likes sync, playlist syncs, unmatched imports, problems; opened from Settings, Liked songs menu and playlist menu (filtered).
