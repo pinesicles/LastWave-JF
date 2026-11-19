@@ -107,7 +107,7 @@ class YtMusicSyncManager @Inject constructor(
         applicationScope.launch {
             while (true) {
                 delay(PERIODIC_INTERVAL_MS)
-                if (AppVisibility.isVisible) runCatching { syncNow("periodic") }
+                if (AppVisibility.isVisible && com.lastwave.app.data.network.YtPolling.allowed()) runCatching { syncNow("periodic") }
             }
         }
     }
@@ -508,7 +508,7 @@ class YtMusicSyncManager @Inject constructor(
         const val TAG = "YtMusicSyncManager"
         const val DEBOUNCE_MS = 750L
         const val INITIAL_DELAY_MS = 2_000L
-  const val PERIODIC_INTERVAL_MS = 60_000L
+  const val PERIODIC_INTERVAL_MS = com.lastwave.app.data.network.YtPolling.INTERVAL_MS
   const val WRITE_PACE_MS = 350L
         const val NEGATIVE_MATCH_TTL_MS = 6 * 60 * 60_000L
         const val MATCH_CONCURRENCY = 6

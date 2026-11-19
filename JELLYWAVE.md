@@ -86,3 +86,4 @@ Offline-first (weak 2.4 GHz Wi-Fi). Server is Jellyfin 12.4.
 - Step 57: playlist import creates then adds in batches (fixes empty playlists); Last.fm 'Because you listen to' shelf; rearrange/hide Feed shelves.
 - Step 58: keep-awake also sets the window flag and only while playing.
 - Step 58: 'Turn Canvas on/off' row in the Now Playing track menu (same setting as Settings).
+- Step 59: YouTube Music background polling stretched from 1 min to 20 min and paused in data saver (was re-downloading the whole liked list every minute).

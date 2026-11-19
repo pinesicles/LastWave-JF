@@ -149,10 +149,10 @@ class YtLikedSongsSync @Inject constructor(
         applicationScope.launch { playlists.changes.collect { requestSync() } }
         applicationScope.launch {
             while (true) {
-                delay(60_000)
+                delay(com.lastwave.app.data.network.YtPolling.INTERVAL_MS)
                 // Background work is needed only while a saved user action is outstanding.
                 try {
-                    if (AppVisibility.isVisible || readJournal().pending.isNotEmpty()) requestSync()
+                    if ((AppVisibility.isVisible && com.lastwave.app.data.network.YtPolling.allowed()) || readJournal().pending.isNotEmpty()) requestSync()
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
